@@ -195,6 +195,33 @@ if (bigResults.length === 0) {
   console.log();
 }
 
+// ── Per-project breakdown ─────────────────────────────────────────────────────────────────────────────────
+
+console.log(`## Per-Project Breakdown\n`);
+const perProject = q(`
+  SELECT
+    COALESCE(project_path, '—') AS project,
+    COUNT(DISTINCT session_id) AS sessions,
+    SUM(total_turns) AS turns,
+    SUM(total_input_tokens + total_output_tokens + total_cached_read + total_cached_write) AS total_tokens,
+    SUM(est_cost_usd) AS total_cost
+  FROM sessions
+  WHERE started_at >= datetime('now', ${WINDOW})
+  GROUP BY project_path
+  ORDER BY total_cost DESC NULLS LAST
+`) as Record<string, unknown>[];
+
+if (perProject.length === 0) {
+  console.log("_No session data._\n");
+} else {
+  console.log("| Project | Sessions | Turns | Total Tokens | Est. Cost |");
+  console.log("|---------|----------|-------|--------------|-----------|");
+  for (const r of perProject) {
+    console.log(`| ${r.project} | ${r.sessions} | ${fmtNum(r.turns as number)} | ${fmtNum(r.total_tokens as number)} | ${fmtCost(r.total_cost as number)} |`);
+  }
+  console.log();
+}
+
 // ── Cache efficiency ──────────────────────────────────────────────────────────────────────────────────────
 
 console.log(`## Cache Efficiency\n`);
