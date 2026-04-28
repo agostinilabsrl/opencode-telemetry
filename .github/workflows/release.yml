@@ -65,7 +65,7 @@ jobs:
           npm version "$NEW_VERSION" --no-git-tag-version
 
       - name: Create and push tag
-        if: "!inputs.dry_run"
+        if: ${{ github.event_name != 'workflow_dispatch' || !inputs.dry_run }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -73,13 +73,13 @@ jobs:
           git push origin "${{ steps.version.outputs.version }}"
 
       - name: Publish to npm
-        if: "!inputs.dry_run"
+        if: ${{ github.event_name != 'workflow_dispatch' || !inputs.dry_run }}
         run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Dry run summary
-        if: "inputs.dry_run"
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
         run: |
           echo "=== DRY RUN — nothing was pushed or published ==="
           echo "Would have created tag: ${{ steps.version.outputs.version }}"
