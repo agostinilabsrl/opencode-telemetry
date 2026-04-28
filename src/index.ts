@@ -1,8 +1,10 @@
 import type { Plugin, PluginModule } from "@opencode-ai/plugin";
 import { initDatabase } from "./db.ts";
 import { createHandlers } from "./handlers.ts";
+import { registerCommands } from "./commands.ts";
 
 const TelemetryPlugin: Plugin = async (ctx) => {
+  registerCommands(import.meta.dir, ctx.directory);
   const db = initDatabase();
   const { onEvent, onToolBefore, onToolAfter } = createHandlers(db, ctx);
 
