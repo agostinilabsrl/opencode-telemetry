@@ -1,0 +1,226 @@
+#!/usr/bin/env bun
+// Generates a markdown telemetry report for the last 7 days.
+import { Database } from "bun:sqlite";
+import { getDbPath } from "../src/paths.ts";
+import fs from "fs";
+
+const dbPath = getDbPath();
+if (!fs.existsSync(dbPath)) {
+  console.log("# Telemetry Report\n\nNo data yet. Run a session with opencode-telemetry installed first.");
+  process.exit(0);
+}
+
+const db = new Database(dbPath, { readonly: true });
+
+type Bindings = Record<string, string | number | boolean | null | bigint | Uint8Array>;
+function q(sql: string, params: Bindings = {}): unknown[] {
+  return db.query(sql).all(params) as unknown[];
+}
+
+function fmtCost(v: number | null): string {
+  if (v == null) return "—";
+  return `$${v.toFixed(4)}`;
+}
+
+function fmtNum(v: number | null): string {
+  if (v == null) return "—";
+  return v.toLocaleString();
+}
+
+const WINDOW = "'-7 days'";
+
+// ── Headline ──────────────────────────────────────────────────────────────────────────────
+
+const headline = q(`
+  SELECT
+    COUNT(DISTINCT s.session_id) AS sessions,
+    SUM(s.total_turns) AS turns,
+    SUM(s.total_input_tokens + s.total_output_tokens + s.total_cached_read + s.total_cached_write) AS total_tokens,
+    SUM(s.est_cost_usd) AS total_cost
+  FROM sessions s
+  WHERE s.started_at >= datetime('now', ${WINDOW})
+`)[0] as Record<string, number | null>;
+
+console.log(`# Telemetry Report — Last 7 Days\n`);
+console.log(`| Metric | Value |`);
+console.log(`|--------|-------|`);
+console.log(`| Sessions | ${fmtNum(headline?.sessions as number)} |`);
+console.log(`| Turns | ${fmtNum(headline?.turns as number)} |`);
+console.log(`| Total Tokens | ${fmtNum(headline?.total_tokens as number)} |`);
+console.log(`| Est. Cost | ${fmtCost(headline?.total_cost as number)} |`);
+console.log();
+
+// ── Top 10 sessions by cost ───────────────────────────────────────────────────────────────────────────
+
+console.log(`## Top 10 Sessions by Cost\n`);
+const topSessions = q(`
+  SELECT
+    substr(session_id, 1, 12) || '…' AS id,
+    COALESCE(primary_agent, '—') AS agent,
+    COALESCE(project_path, '—') AS project,
+    total_input_tokens + total_output_tokens AS tokens,
+    est_cost_usd AS cost,
+    total_turns AS turns,
+    substr(started_at, 1, 16) AS started
+  FROM sessions
+  WHERE started_at >= datetime('now', ${WINDOW})
+    AND est_cost_usd IS NOT NULL
+  ORDER BY est_cost_usd DESC
+  LIMIT 10
+`) as Record<string, unknown>[];
+
+if (topSessions.length === 0) {
+  console.log("_No sessions with cost data._\n");
+} else {
+  console.log("| Session | Agent | Tokens | Cost | Turns | Started |");
+  console.log("|---------|-------|--------|------|-------|---------|")
+  for (const r of topSessions) {
+    console.log(`| ${r.id} | ${r.agent} | ${fmtNum(r.tokens as number)} | ${fmtCost(r.cost as number)} | ${r.turns} | ${r.started} |`);
+  }
+  console.log();
+}
+
+// ── Per-agent breakdown ─────────────────────────────────────────────────────────────────────────────
+
+console.log(`## Per-Agent Breakdown\n`);
+const perAgent = q(`
+  SELECT
+    COALESCE(agent, '—') AS agent,
+    SUM(input_tokens + COALESCE(cached_read_tokens, 0)) AS total_in,
+    SUM(output_tokens) AS total_out,
+    ROUND(1.0 * SUM(input_tokens + COALESCE(cached_read_tokens, 0)) / NULLIF(SUM(output_tokens), 0), 1) AS ratio,
+    COUNT(*) AS turns
+  FROM turns
+  WHERE created_at >= datetime('now', ${WINDOW})
+  GROUP BY agent
+  ORDER BY total_in DESC
+`) as Record<string, unknown>[];
+
+if (perAgent.length === 0) {
+  console.log("_No turn data._\n");
+} else {
+  console.log("| Agent | Total In | Total Out | In/Out | Turns |");
+  console.log("|-------|----------|-----------|--------|-------|")
+  for (const r of perAgent) {
+    console.log(`| ${r.agent} | ${fmtNum(r.total_in as number)} | ${fmtNum(r.total_out as number)} | ${r.ratio ?? "—"} | ${r.turns} |`);
+  }
+  console.log();
+}
+
+// ── Per-model breakdown ─────────────────────────────────────────────────────────────────────────────
+
+console.log(`## Per-Model Breakdown\n`);
+const perModel = q(`
+  SELECT
+    COALESCE(provider_id, '—') AS provider,
+    COALESCE(model, '—') AS model,
+    COUNT(*) AS calls,
+    SUM(input_tokens + COALESCE(output_tokens, 0) + COALESCE(cached_read_tokens, 0)) AS total_tokens
+  FROM turns
+  WHERE created_at >= datetime('now', ${WINDOW})
+  GROUP BY provider_id, model
+  ORDER BY total_tokens DESC
+`) as Record<string, unknown>[];
+
+if (perModel.length === 0) {
+  console.log("_No turn data._\n");
+} else {
+  console.log("| Provider | Model | Calls | Total Tokens |");
+  console.log("|----------|-------|-------|--------------|")
+  for (const r of perModel) {
+    console.log(`| ${r.provider} | ${r.model} | ${r.calls} | ${fmtNum(r.total_tokens as number)} |`);
+  }
+  console.log();
+}
+
+// ── Skill usage ───────────────────────────────────────────────────────────────────────────────────
+
+console.log(`## Skill Usage\n`);
+const skills = q(`
+  SELECT
+    skill_name,
+    COUNT(*) AS calls,
+    COUNT(DISTINCT session_id) AS sessions,
+    SUM(CASE WHEN cnt > 1 THEN 1 ELSE 0 END) AS sessions_with_dupes
+  FROM (
+    SELECT skill_name, session_id, COUNT(*) AS cnt
+    FROM tool_calls
+    WHERE tool_name = 'skill' AND skill_name IS NOT NULL
+      AND created_at >= datetime('now', ${WINDOW})
+    GROUP BY skill_name, session_id
+  )
+  GROUP BY skill_name
+  ORDER BY calls DESC
+  LIMIT 20
+`) as Record<string, unknown>[];
+
+if (skills.length === 0) {
+  console.log("_No skill data._\n");
+} else {
+  console.log("| Skill | Calls | Sessions | Sessions w/ Dupes |");
+  console.log("|-------|-------|----------|-------------------|")
+  for (const r of skills) {
+    console.log(`| ${r.skill_name} | ${r.calls} | ${r.sessions} | ${r.sessions_with_dupes} |`);
+  }
+  console.log();
+}
+
+// ── Largest tool result outputs ───────────────────────────────────────────────────────────────────────────
+
+console.log(`## Largest Tool Result Outputs (top 10)\n`);
+const bigResults = q(`
+  SELECT
+    tool_name,
+    skill_name,
+    result_size_bytes,
+    duration_ms,
+    substr(session_id, 1, 12) || '…' AS session,
+    substr(created_at, 1, 16) AS time
+  FROM tool_calls
+  WHERE result_size_bytes IS NOT NULL
+    AND created_at >= datetime('now', ${WINDOW})
+  ORDER BY result_size_bytes DESC
+  LIMIT 10
+`) as Record<string, unknown>[];
+
+if (bigResults.length === 0) {
+  console.log("_No tool call data._\n");
+} else {
+  console.log("| Tool | Result (bytes) | Duration (ms) | Session | Time |");
+  console.log("|------|---------------|--------------|---------|------|")
+  for (const r of bigResults) {
+    const toolLabel = r.skill_name ? `${r.tool_name}:${r.skill_name}` : String(r.tool_name);
+    console.log(`| ${toolLabel} | ${fmtNum(r.result_size_bytes as number)} | ${r.duration_ms ?? "—"} | ${r.session} | ${r.time} |`);
+  }
+  console.log();
+}
+
+// ── Cache efficiency ──────────────────────────────────────────────────────────────────────────────────────
+
+console.log(`## Cache Efficiency\n`);
+const cache = q(`
+  SELECT
+    COALESCE(provider_id, '—') AS provider,
+    COALESCE(model, '—') AS model,
+    SUM(COALESCE(cached_read_tokens, 0)) AS cached,
+    SUM(COALESCE(input_tokens, 0)) AS fresh,
+    ROUND(100.0 * SUM(COALESCE(cached_read_tokens, 0)) /
+      NULLIF(SUM(COALESCE(cached_read_tokens, 0) + COALESCE(input_tokens, 0)), 0), 1) AS hit_pct
+  FROM turns
+  WHERE created_at >= datetime('now', ${WINDOW})
+  GROUP BY provider_id, model
+  ORDER BY hit_pct DESC
+`) as Record<string, unknown>[];
+
+if (cache.length === 0) {
+  console.log("_No cache data._\n");
+} else {
+  console.log("| Provider | Model | Cached | Fresh | Hit % |");
+  console.log("|----------|-------|--------|-------|-------|")
+  for (const r of cache) {
+    console.log(`| ${r.provider} | ${r.model} | ${fmtNum(r.cached as number)} | ${fmtNum(r.fresh as number)} | ${r.hit_pct ?? "—"}% |`);
+  }
+  console.log();
+}
+
+db.close();
