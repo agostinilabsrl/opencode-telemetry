@@ -1,0 +1,8 @@
+node_modules/
+*.tgz
+dist/
+.DS_Store
+*.db
+*.db-wal
+*.db-shm
+bun.lockb
