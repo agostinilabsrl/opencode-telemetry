@@ -4,11 +4,15 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run: skip tag push and npm publish (for testing)"
+        type: boolean
+        default: true
 
 jobs:
   release:
-    # Prevent infinite loop: skip commits made by this workflow itself
-    if: "!contains(github.event.head_commit.message, '[skip ci]')"
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -16,8 +20,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # Use GITHUB_TOKEN so the version-bump push triggers no further workflows
-          token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
       - uses: oven-sh/setup-bun@v2
@@ -36,25 +38,50 @@ jobs:
       - name: Type check
         run: bun tsc --noEmit
 
-      - name: Configure git
+      - name: Compute next patch version from latest git tag
+        id: version
+        run: |
+          git fetch --tags
+
+          # Find the latest semver tag (vX.Y.Z), fall back to package.json version
+          LATEST=$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+          if [ -z "$LATEST" ]; then
+            BASE=$(node -p "require('./package.json').version")
+            LATEST="v${BASE}"
+            echo "No existing tags found, starting from package.json version: ${LATEST}"
+          else
+            echo "Latest tag: ${LATEST}"
+          fi
+
+          MAJOR=$(echo "$LATEST" | sed 's/^v//' | cut -d. -f1)
+          MINOR=$(echo "$LATEST" | sed 's/^v//' | cut -d. -f2)
+          PATCH=$(echo "$LATEST" | sed 's/^v//' | cut -d. -f3)
+          NEW_VERSION="v${MAJOR}.${MINOR}.$((PATCH + 1))"
+
+          echo "Next version: ${NEW_VERSION}"
+          echo "version=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
+
+          # Update package.json only in the workspace (never committed to main)
+          npm version "$NEW_VERSION" --no-git-tag-version
+
+      - name: Create and push tag
+        if: "!inputs.dry_run"
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-
-      - name: Bump patch version
-        id: version
-        run: |
-          NEW_VERSION=$(npm version patch --no-git-tag-version)
-          echo "version=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
-
-      - name: Commit and tag
-        run: |
-          git add package.json
-          git commit -m "chore: release ${{ steps.version.outputs.version }} [skip ci]"
           git tag "${{ steps.version.outputs.version }}"
-          git push origin main --follow-tags
+          git push origin "${{ steps.version.outputs.version }}"
 
       - name: Publish to npm
+        if: "!inputs.dry_run"
         run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Dry run summary
+        if: "inputs.dry_run"
+        run: |
+          echo "=== DRY RUN — nothing was pushed or published ==="
+          echo "Would have created tag: ${{ steps.version.outputs.version }}"
+          echo "Would have published version: ${{ steps.version.outputs.version }}"
+          node -p "require('./package.json').version"
