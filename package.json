@@ -24,7 +24,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/agostinilabsrl/opencode-telemetry"
+    "url": "git+https://github.com/agostinilabsrl/opencode-telemetry.git"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
