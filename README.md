@@ -22,6 +22,18 @@ You're running AI sessions all day. You probably have **no idea**:
 
 ---
 
+## Prerequisites
+
+The telemetry plugin itself always runs inside opencode's own Bun process, so the
+database is created and populated regardless of what is in your `PATH`.
+
+The **slash commands** (`/telemetry-report`, `/telemetry-inspect`) require **one** of:
+
+- **[Bun](https://bun.sh) ≥ 1.0** in `PATH` (recommended — opencode already ships with Bun)
+- **Node.js ≥ 22.5** in `PATH` (uses the built-in `node:sqlite` module as a fallback)
+
+---
+
 ## Install
 
 ```bash
@@ -37,6 +49,9 @@ Add to your `opencode.json`:
 ```
 
 Restart opencode. The database is created automatically on the first event — no setup, no migration, no config file.
+
+> **Note:** `npm install opencode-telemetry` is sufficient for telemetry collection.
+> For the slash commands to work, `bun` or `node ≥ 22.5` must also be available in `PATH`.
 
 > **Database location**
 > `~/.local/share/opencode-telemetry/data.db` on Linux/macOS

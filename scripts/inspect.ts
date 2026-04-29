@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // Shows a detailed breakdown of a single session.
 // Usage: bun run scripts/inspect.ts <session_id>
-import { Database } from "bun:sqlite";
+import { openDatabase } from "./db-compat.ts";
 import { getDbPath } from "../src/paths.ts";
 import fs from "fs";
 
@@ -17,7 +17,7 @@ if (!fs.existsSync(dbPath)) {
   process.exit(1);
 }
 
-const db = new Database(dbPath, { readonly: true });
+const db = openDatabase(dbPath);
 
 type Bindings = Record<string, string | number | boolean | null | bigint | Uint8Array>;
 function q(sql: string, params: Bindings = {}): unknown[] {

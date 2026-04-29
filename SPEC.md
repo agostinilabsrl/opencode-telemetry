@@ -224,7 +224,6 @@ opencode-telemetry/
 ├── LICENSE                          (MIT)
 ├── tsconfig.json
 ├── .gitignore
-├── .npmignore
 ├── src/
 │   ├── index.ts                     (plugin entry, exports default plugin function)
 │   ├── db.ts                        (SQLite init, schema migration, prepared statements)
@@ -236,6 +235,13 @@ opencode-telemetry/
 ├── command/
 │   ├── telemetry-report.md          (slash command definition)
 │   └── telemetry-inspect.md
+├── scripts/
+│   ├── db-compat.ts                 (cross-runtime SQLite adapter: bun:sqlite in Bun, node:sqlite in Node ≥22.5)
+│   ├── report.ts                    (generates markdown report for last 7 days; run directly via Bun)
+│   ├── inspect.ts                   (per-session deep-dive; run directly via Bun)
+│   ├── report.js                    (built artifact — Node-compatible bundle; produced by build:scripts, not committed)
+│   ├── inspect.js                   (built artifact — Node-compatible bundle; produced by build:scripts, not committed)
+│   └── smoke.ts                     (smoke test for DB initialization)
 └── queries/
     ├── top-consumers-7d.sql
     ├── ratio-in-out-by-agent.sql
@@ -258,6 +264,7 @@ opencode-telemetry/
     "src/",
     "command/",
     "queries/",
+    "scripts/",
     "README.md",
     "LICENSE"
   ],
@@ -275,26 +282,24 @@ opencode-telemetry/
     "type": "git",
     "url": "https://github.com/<owner>/opencode-telemetry"
   },
-  "dependencies": {
-    "better-sqlite3": "^11.0.0"
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "smoke": "bun run scripts/smoke.ts",
+    "build:scripts": "bun build scripts/report.ts scripts/inspect.ts --target=node --external bun:sqlite --outdir=scripts",
+    "prepublishOnly": "bun run build:scripts"
   },
   "peerDependencies": {
     "@opencode-ai/plugin": "*"
   },
   "devDependencies": {
     "@opencode-ai/plugin": "*",
-    "typescript": "^5.4.0",
-    "@types/better-sqlite3": "^7.6.0"
+    "bun-types": "^1.3.13",
+    "typescript": "^5.4.0"
   }
 }
 ```
 
-Note: `better-sqlite3` is the standard. Bun has its own `bun:sqlite` built-in which is faster and zero-dependency. **Prefer `bun:sqlite`** since opencode runs on Bun. Use `better-sqlite3` only if `bun:sqlite` import fails for any reason. The agent should:
-1. First attempt `import { Database } from "bun:sqlite"`.
-2. If that fails at install or runtime, fall back to `better-sqlite3`.
-3. Document the chosen path in a code comment.
-
-If using `bun:sqlite`, remove `better-sqlite3` from dependencies entirely.
+Note: `better-sqlite3` is **not used**. `bun:sqlite` (built-in, zero external dependency) is used in the plugin core (`src/`) since opencode runs on Bun. The `scripts/` directory uses a cross-runtime adapter (`scripts/db-compat.ts`) that picks `bun:sqlite` in Bun and `node:sqlite` (Node 22.5+ built-in) in Node. See NOTES.md §14 for the full rationale and §13 for the decision not to use `better-sqlite3`.
 
 ### 5.3 Plugin entry point (`src/index.ts`) — pseudocode
 
@@ -383,21 +388,19 @@ export default TelemetryPlugin;
 
 File: `command/telemetry-report.md`
 
-```markdown
----
-description: Show a markdown report of recent telemetry (last 7 days by default).
----
+The command uses a 3-tier fallback to locate and run the report script regardless of how the package was installed:
 
-You are running the telemetry-report command. Execute the report script:
-
-`bash node ~/.config/opencode/plugin/opencode-telemetry/scripts/report.js`
-
-(Or wherever the plugin is installed — adjust the path based on installation method.)
-
-Display the output verbatim. Do not interpret, summarize, or modify.
+```bash
+bun run "<global-pkg-path>/scripts/report.ts" 2>/dev/null \
+  || bun run ~/.config/opencode/plugin/opencode-telemetry/scripts/report.ts 2>/dev/null \
+  || node ~/.config/opencode/plugin/opencode-telemetry/scripts/report.js
 ```
 
-The companion script (`scripts/report.js` or inline TS) runs a fixed set of queries against the SQLite DB and emits markdown:
+- Tier 1 resolves the global install path via `bun pm ls -g`.
+- Tier 2 uses the conventional opencode plugin config directory.
+- Tier 3 (Node fallback) runs the pre-built `report.js` bundle, which requires Node ≥ 22.5. This file is produced by `build:scripts` and shipped in the npm package but is not committed to git.
+
+The companion script (`scripts/report.ts` / `scripts/report.js`) runs a fixed set of queries against the SQLite DB and emits markdown:
 
 1. **Headline**: total tokens, total cost (estimated), total sessions, total turns — last 7 days.
 2. **Top 10 sessions by cost** — `session_id`, agent, model, total cost, total turns.
@@ -413,21 +416,12 @@ Each section is a small markdown table generated from one SQL query.
 
 File: `command/telemetry-inspect.md`
 
-```markdown
----
-description: Deep-dive into a specific session by ID. Combines local telemetry metrics with opencode's stored message history.
-argument-hint: <session_id>
----
+Same 3-tier fallback pattern as `/telemetry-report`, passing `$ARGUMENTS` (the session ID) to the script:
 
-You are running telemetry-inspect for session ID: $ARGUMENTS
-
-1. Run the inspect script with the session ID:
-
-`bash node ~/.config/opencode/plugin/opencode-telemetry/scripts/inspect.js $ARGUMENTS`
-
-2. Display the metrics output verbatim.
-
-3. If the user wants to see the actual message contents for this session, suggest they use opencode's native session navigation (e.g. via the share or history features).
+```bash
+bun run "<global-pkg-path>/scripts/inspect.ts" "$ARGUMENTS" 2>/dev/null \
+  || bun run ~/.config/opencode/plugin/opencode-telemetry/scripts/inspect.ts "$ARGUMENTS" 2>/dev/null \
+  || node ~/.config/opencode/plugin/opencode-telemetry/scripts/inspect.js "$ARGUMENTS"
 ```
 
 The inspect script outputs:
