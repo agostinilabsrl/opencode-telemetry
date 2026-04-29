@@ -7,3 +7,5 @@ dist/
 *.db-shm
 bun.lockb
 .opencode/commands/
+scripts/report.js
+scripts/inspect.js

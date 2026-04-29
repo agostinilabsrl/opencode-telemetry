@@ -28,7 +28,9 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "smoke": "bun run scripts/smoke.ts"
+    "smoke": "bun run scripts/smoke.ts",
+    "build:scripts": "bun build scripts/report.ts scripts/inspect.ts --target=node --external bun:sqlite --outdir=scripts",
+    "prepublishOnly": "bun run build:scripts"
   },
   "peerDependencies": {
     "@opencode-ai/plugin": "*"

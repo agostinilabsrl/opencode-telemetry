@@ -163,3 +163,29 @@ opencode loads the module's `server` named export.
 ## 13. `better-sqlite3` not used — `bun:sqlite` used throughout
 
 Per spec §5.2 preference: `bun:sqlite` (built-in, zero external dependency) was used from the start. `better-sqlite3` is not in `dependencies`. The `package.json` has no runtime dependencies at all.
+
+---
+
+## 14. Slash command Node fallback was broken at initial implementation
+
+**Spec assumed** (§6.1/6.2): a `scripts/report.js` / `scripts/inspect.js` would be available as a Node fallback in the published package.
+
+**Initial implementation drift**: the scripts were written as `.ts` files using `bun:sqlite` and run directly with `bun run`. The 3-tier fallback chain in the `.md` command files referenced `.js` files, but those files were never built or published — `tsconfig.json` has `"noEmit": true` and no bundler was configured. On machines without Bun in `PATH`, the fallback ran `node .../report.js`, which failed with `Cannot find module`.
+
+**Fix (issue #12)**: three changes were made together:
+
+1. **`scripts/db-compat.ts`** — a new cross-runtime SQLite adapter. Uses `createRequire` from `node:module` (available in both Bun and Node) for synchronous module loading:
+   - In Bun (`typeof Bun !== "undefined"`): loads `bun:sqlite` and returns its `Database` directly (already has `.query(sql).all(params)` and `.close()`).
+   - In Node ≥ 22.5: loads `node:sqlite`'s `DatabaseSync` and wraps it to expose the same `.query(sql).all(params)` interface.
+   - Named-parameter objects (`{ $id: value }`) work identically in both runtimes.
+
+2. **`scripts/report.ts` and `scripts/inspect.ts`** — replaced `import { Database } from "bun:sqlite"` with `import { openDatabase } from "./db-compat.ts"`. The `q()` helper and all query calls are unchanged.
+
+3. **Build step** — `package.json` now has:
+   ```
+   "build:scripts": "bun build scripts/report.ts scripts/inspect.ts --target=node --external bun:sqlite --outdir=scripts"
+   "prepublishOnly": "bun run build:scripts"
+   ```
+   `--external bun:sqlite` prevents the bundler from trying to resolve the Bun-only module. In the bundled output, `require("bun:sqlite")` only appears inside the `typeof Bun !== "undefined"` branch, so it is never executed under Node. The produced `scripts/report.js` and `scripts/inspect.js` are included in the npm package (via the existing `"scripts/"` entry in `files`) but excluded from git (added to `.gitignore`).
+
+**Runtime requirement for Node fallback**: Node ≥ 22.5 (first stable release with `node:sqlite` built in). No external dependencies are added. The plugin core (`src/`) continues to use `bun:sqlite` exclusively and is unaffected.
