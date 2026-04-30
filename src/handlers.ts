@@ -50,7 +50,11 @@ export function createHandlers(db: DbHandle, ctx: PluginInput) {
         const msg = event.properties.info;
         if (msg.role === "user") {
           // Cache agent for this session from user messages
-          if (msg.agent) sessionCurrentAgent.set(msg.sessionID, msg.agent);
+          if (msg.agent) {
+            sessionCurrentAgent.set(msg.sessionID, msg.agent);
+            // Set primary_agent on the session (only if not already set — idempotent)
+            db.updatePrimaryAgent(msg.sessionID, msg.agent);
+          }
           return;
         }
         // AssistantMessage from here
