@@ -174,7 +174,7 @@ const toolP95 = q(`
     WHERE result_size_bytes IS NOT NULL
       AND created_at >= datetime('now', ${WINDOW})
   )
-  WHERE rn = MAX(1, CAST(cnt * 0.95 AS INTEGER))
+  WHERE rn = CASE WHEN CAST(cnt * 0.95 AS INTEGER) < 1 THEN 1 ELSE CAST(cnt * 0.95 AS INTEGER) END
 `) as Record<string, unknown>[];
 
 const p95Map = new Map<string, number>();
