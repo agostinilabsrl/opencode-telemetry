@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   started_at          TEXT NOT NULL,
   ended_at            TEXT,
   primary_agent       TEXT,
+  slash_command       TEXT,
   project_path        TEXT,
   worktree_path       TEXT,
   total_input_tokens  INTEGER DEFAULT 0,
@@ -28,6 +29,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE INDEX IF NOT EXISTS idx_sessions_started_at ON sessions(started_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_path);
+CREATE INDEX IF NOT EXISTS idx_sessions_slash_command ON sessions(slash_command) WHERE slash_command IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS turns (
   id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -91,6 +93,7 @@ export interface DbHandle {
     project_path?: string | null;
     worktree_path?: string | null;
   }): void;
+  updatePrimaryAgent(session_id: string, agent: string): void;
   incrementSessionTurns(session_id: string, cost: number | null, input: number, output: number, cached_read: number, cached_write: number, reasoning: number): void;
   insertToolCall(row: ToolCallRow): void;
   incrementSessionToolCalls(session_id: string): void;
@@ -108,6 +111,9 @@ export function initDatabase(): DbHandle {
   db.exec("PRAGMA synchronous=NORMAL");
   db.exec("PRAGMA foreign_keys=ON");
   db.exec(SCHEMA);
+
+  // Migrations: add columns that may not exist in older databases (errors are swallowed)
+  try { db.exec("ALTER TABLE sessions ADD COLUMN slash_command TEXT"); } catch { /* already exists */ }
 
   const stmtUpsertSession = db.prepare(`
     INSERT INTO sessions (session_id, parent_session_id, started_at, primary_agent, project_path, worktree_path)
@@ -168,6 +174,13 @@ export function initDatabase(): DbHandle {
     SELECT COALESCE(MAX(turn_idx), -1) AS max_idx FROM turns WHERE session_id = $session_id
   `);
 
+  const stmtUpdatePrimaryAgent = db.prepare(`
+    UPDATE sessions SET
+      primary_agent = $agent,
+      slash_command = '/' || $agent
+    WHERE session_id = $session_id AND primary_agent IS NULL
+  `);
+
   return {
     upsertSession(fields) {
       try {
@@ -181,6 +194,14 @@ export function initDatabase(): DbHandle {
         });
       } catch (err) {
         console.warn("[opencode-telemetry] upsertSession failed:", err);
+      }
+    },
+
+    updatePrimaryAgent(session_id, agent) {
+      try {
+        stmtUpdatePrimaryAgent.run({ $session_id: session_id, $agent: agent });
+      } catch (err) {
+        console.warn("[opencode-telemetry] updatePrimaryAgent failed:", err);
       }
     },
 

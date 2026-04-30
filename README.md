@@ -81,7 +81,7 @@ Run these from inside opencode for instant reports.
 
 ### `/telemetry-report`
 
-A full 7-day summary rendered as markdown — headline stats, top sessions by cost, per-agent and per-model breakdowns, skill usage, and cache efficiency:
+A full 7-day summary rendered as markdown — headline stats, top sessions (with full IDs and slash command entrypoints), per-agent breakdown with cache hit %, per-model breakdown, tool result size stats (p50/p95), skill usage, and cache efficiency:
 
 ```
 # Telemetry Report — Last 7 Days
@@ -95,23 +95,34 @@ A full 7-day summary rendered as markdown — headline stats, top sessions by co
 
 ## Top 10 Sessions by Cost
 
-| Session       | Agent        | Tokens    | Cost    | Turns | Started          |
-|---------------|--------------|-----------|---------|-------|------------------|
-| 3f9a1b2c4d5e… | claude-code  | 312,440   | $1.8821 | 22    | 2026-04-27 14:03 |
-| a1b2c3d4e5f6… | claude-code  | 198,770   | $1.2041 | 14    | 2026-04-26 09:51 |
-| ...           |              |           |         |       |                  |
+| Session ID                           | Command | Agent       | Tokens    | Cost    | Turns | Started          |
+|--------------------------------------|---------|-------------|-----------|---------|-------|------------------|
+| 3f9a1b2c-4d5e-6f7a-8b9c-0d1e2f3a4b5c | /forge  | forge       | 312,440   | $1.8821 | 22    | 2026-04-27 14:03 |
+| a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d | /swarm  | conductor   | 198,770   | $1.2041 | 14    | 2026-04-26 09:51 |
+...
 
-## By Model
+## Per-Agent Breakdown
 
-| Model                        | Turns | Input Tok   | Output Tok | Est. Cost |
-|------------------------------|-------|-------------|------------|-----------|
-| anthropic/claude-sonnet-4-6  | 134   | 1,441,200   | 287,340    | $6.5812   |
-| anthropic/claude-haiku-4-5   | 53    | 389,100     | 72,440     | $0.6021   |
+| Agent     | Total In    | Total Out | In/Out | Turns | Cache Hit % |
+|-----------|-------------|-----------|--------|-------|-------------|
+| general   | 22,920,701  | 174,980   | 131    | 641   | 68.2%       |
+| conductor | 15,137,011  | 112,143   | 135    | 264   | 71.4%       |
 ```
 
 ### `/telemetry-inspect <session_id>`
 
-Deep-dive into a single session: turn-by-turn metrics, tool call timeline, skill load summary, and full cost breakdown.
+Deep-dive into a single session: metadata (including slash command entrypoint), sub-session agent hops, agent chain summary with cache hit %, turn-by-turn metrics, tool call timeline, per-tool result size stats, skill load summary, and full cost breakdown.
+
+Accepts full session IDs or unique prefixes.
+
+### `/telemetry-db-analyst`
+
+A skill that gives opencode direct SQL access to the telemetry database for custom analysis:
+- Per-hop token breakdown for multi-agent chain runs
+- Context growth analysis (cumulative input tokens across turns)
+- Tool result p50/p95 by tool type
+- Cost comparison across runs of the same slash command
+- Any ad-hoc query not covered by the canned reports
 
 ---
 
@@ -161,7 +172,8 @@ Three tables, no surprises.
 sessions
 ├── session_id          TEXT  PRIMARY KEY
 ├── project_path        TEXT
-├── primary_agent       TEXT
+├── primary_agent       TEXT  (first agent seen in session)
+├── slash_command       TEXT  (inferred from primary_agent, e.g. /forge)
 ├── parent_session_id   TEXT  (set for subagent sessions)
 ├── started_at          TEXT
 ├── ended_at            TEXT

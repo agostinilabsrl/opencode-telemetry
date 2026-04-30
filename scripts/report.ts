@@ -55,7 +55,8 @@ console.log();
 console.log(`## Top 10 Sessions by Cost\n`);
 const topSessions = q(`
   SELECT
-    substr(session_id, 1, 12) || '…' AS id,
+    session_id AS id,
+    COALESCE(slash_command, CASE WHEN primary_agent IS NOT NULL THEN '/' || primary_agent ELSE '—' END) AS command,
     COALESCE(primary_agent, '—') AS agent,
     COALESCE(project_path, '—') AS project,
     total_input_tokens + total_output_tokens AS tokens,
@@ -72,10 +73,10 @@ const topSessions = q(`
 if (topSessions.length === 0) {
   console.log("_No sessions with cost data._\n");
 } else {
-  console.log("| Session | Agent | Tokens | Cost | Turns | Started |");
-  console.log("|---------|-------|--------|------|-------|---------|")
+  console.log("| Session ID | Command | Agent | Tokens | Cost | Turns | Started |");
+  console.log("|------------|---------|-------|--------|------|-------|---------|")
   for (const r of topSessions) {
-    console.log(`| ${r.id} | ${r.agent} | ${fmtNum(r.tokens as number)} | ${fmtCost(r.cost as number)} | ${r.turns} | ${r.started} |`);
+    console.log(`| ${r.id} | ${r.command} | ${r.agent} | ${fmtNum(r.tokens as number)} | ${fmtCost(r.cost as number)} | ${r.turns} | ${r.started} |`);
   }
   console.log();
 }
@@ -89,7 +90,9 @@ const perAgent = q(`
     SUM(input_tokens + COALESCE(cached_read_tokens, 0)) AS total_in,
     SUM(output_tokens) AS total_out,
     ROUND(1.0 * SUM(input_tokens + COALESCE(cached_read_tokens, 0)) / NULLIF(SUM(output_tokens), 0), 1) AS ratio,
-    COUNT(*) AS turns
+    COUNT(*) AS turns,
+    ROUND(100.0 * SUM(COALESCE(cached_read_tokens, 0)) /
+      NULLIF(SUM(COALESCE(cached_read_tokens, 0) + COALESCE(input_tokens, 0)), 0), 1) AS cache_hit_pct
   FROM turns
   WHERE created_at >= datetime('now', ${WINDOW})
   GROUP BY agent
@@ -99,10 +102,11 @@ const perAgent = q(`
 if (perAgent.length === 0) {
   console.log("_No turn data._\n");
 } else {
-  console.log("| Agent | Total In | Total Out | In/Out | Turns |");
-  console.log("|-------|----------|-----------|--------|-------|")
+  console.log("| Agent | Total In | Total Out | In/Out | Turns | Cache Hit % |");
+  console.log("|-------|----------|-----------|--------|-------|-------------|")
   for (const r of perAgent) {
-    console.log(`| ${r.agent} | ${fmtNum(r.total_in as number)} | ${fmtNum(r.total_out as number)} | ${r.ratio ?? "—"} | ${r.turns} |`);
+    const cachePct = r.cache_hit_pct != null ? `${r.cache_hit_pct}%` : "—";
+    console.log(`| ${r.agent} | ${fmtNum(r.total_in as number)} | ${fmtNum(r.total_out as number)} | ${r.ratio ?? "—"} | ${r.turns} | ${cachePct} |`);
   }
   console.log();
 }
@@ -129,6 +133,63 @@ if (perModel.length === 0) {
   console.log("|----------|-------|-------|--------------|")
   for (const r of perModel) {
     console.log(`| ${r.provider} | ${r.model} | ${r.calls} | ${fmtNum(r.total_tokens as number)} |`);
+  }
+  console.log();
+}
+
+// ── Tool result size stats (p50 / p95 per tool type) ──────────────────────────────────────────────────────
+
+console.log(`## Tool Result Size Stats (p50 / p95)\n`);
+const toolStats = q(`
+  SELECT
+    tool_name,
+    COUNT(*) AS calls,
+    CAST(AVG(result_size_bytes) AS INTEGER) AS avg_bytes,
+    MAX(result_size_bytes) AS max_bytes,
+    CAST(result_size_bytes AS INTEGER) AS p50_bytes
+  FROM (
+    SELECT tool_name, result_size_bytes,
+      ROW_NUMBER() OVER (PARTITION BY tool_name ORDER BY result_size_bytes) AS rn,
+      COUNT(*) OVER (PARTITION BY tool_name) AS cnt
+    FROM tool_calls
+    WHERE result_size_bytes IS NOT NULL
+      AND created_at >= datetime('now', ${WINDOW})
+  )
+  WHERE rn = (cnt + 1) / 2
+  GROUP BY tool_name
+  ORDER BY avg_bytes DESC
+  LIMIT 20
+`) as Record<string, unknown>[];
+
+// Compute p95 separately
+const toolP95 = q(`
+  SELECT
+    tool_name,
+    CAST(result_size_bytes AS INTEGER) AS p95_bytes
+  FROM (
+    SELECT tool_name, result_size_bytes,
+      ROW_NUMBER() OVER (PARTITION BY tool_name ORDER BY result_size_bytes) AS rn,
+      COUNT(*) OVER (PARTITION BY tool_name) AS cnt
+    FROM tool_calls
+    WHERE result_size_bytes IS NOT NULL
+      AND created_at >= datetime('now', ${WINDOW})
+  )
+  WHERE rn = CASE WHEN CAST(cnt * 0.95 AS INTEGER) < 1 THEN 1 ELSE CAST(cnt * 0.95 AS INTEGER) END
+`) as Record<string, unknown>[];
+
+const p95Map = new Map<string, number>();
+for (const r of toolP95) {
+  p95Map.set(r.tool_name as string, r.p95_bytes as number);
+}
+
+if (toolStats.length === 0) {
+  console.log("_No tool call data._\n");
+} else {
+  console.log("| Tool | Calls | Avg (B) | p50 (B) | p95 (B) | Max (B) |");
+  console.log("|------|-------|---------|---------|---------|---------|")
+  for (const r of toolStats) {
+    const p95 = p95Map.get(r.tool_name as string);
+    console.log(`| ${r.tool_name} | ${r.calls} | ${fmtNum(r.avg_bytes as number)} | ${fmtNum(r.p50_bytes as number)} | ${fmtNum(p95 ?? null)} | ${fmtNum(r.max_bytes as number)} |`);
   }
   console.log();
 }
@@ -174,7 +235,7 @@ const bigResults = q(`
     skill_name,
     result_size_bytes,
     duration_ms,
-    substr(session_id, 1, 12) || '…' AS session,
+    session_id,
     substr(created_at, 1, 16) AS time
   FROM tool_calls
   WHERE result_size_bytes IS NOT NULL
@@ -186,11 +247,11 @@ const bigResults = q(`
 if (bigResults.length === 0) {
   console.log("_No tool call data._\n");
 } else {
-  console.log("| Tool | Result (bytes) | Duration (ms) | Session | Time |");
-  console.log("|------|---------------|--------------|---------|------|")
+  console.log("| Tool | Result (bytes) | Duration (ms) | Session ID | Time |");
+  console.log("|------|----------------|---------------|------------|------|")
   for (const r of bigResults) {
     const toolLabel = r.skill_name ? `${r.tool_name}:${r.skill_name}` : String(r.tool_name);
-    console.log(`| ${toolLabel} | ${fmtNum(r.result_size_bytes as number)} | ${r.duration_ms ?? "—"} | ${r.session} | ${r.time} |`);
+    console.log(`| ${toolLabel} | ${fmtNum(r.result_size_bytes as number)} | ${r.duration_ms ?? "—"} | ${r.session_id} | ${r.time} |`);
   }
   console.log();
 }
@@ -251,3 +312,14 @@ if (cache.length === 0) {
 }
 
 db.close();
+
+// ── Disclaimer ────────────────────────────────────────────────────────────────────────────────────────
+
+console.log(`---`);
+console.log();
+console.log(`> **Advanced analysis available** — Use the \`/telemetry-db-analyst\` skill to query the`);
+console.log(`> telemetry database directly with natural-language questions. The skill gives opencode`);
+console.log(`> full SQL access to \`sessions\`, \`turns\`, and \`tool_calls\` for custom breakdowns,`);
+console.log(`> hop-level diagnostics, context source analysis, and chain comparisons not shown above.`);
+console.log(`> Run \`/telemetry-inspect <session_id>\` for a full per-turn breakdown of any session above.`);
+console.log(`> All session IDs above are full and untruncated — copy any to use with \`/telemetry-inspect\`.`);

@@ -4,6 +4,7 @@ export interface SessionRow {
   started_at: string;
   ended_at: string | null;
   primary_agent: string | null;
+  slash_command: string | null;
   project_path: string | null;
   worktree_path: string | null;
   total_input_tokens: number;
