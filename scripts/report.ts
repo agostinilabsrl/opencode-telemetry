@@ -311,6 +311,46 @@ if (cache.length === 0) {
   console.log();
 }
 
+// ── Orchestration Cost Rollup ──────────────────────────────────────────────────────────────────────────
+
+console.log(`## Orchestration Cost Rollup\n`);
+const orchRollup = q(`
+  WITH RECURSIVE tree(session_id, root, est_cost_usd, depth) AS (
+    SELECT session_id, session_id AS root, COALESCE(est_cost_usd, 0), 0
+    FROM sessions
+    WHERE parent_session_id IS NULL
+      AND started_at >= datetime('now', ${WINDOW})
+    UNION ALL
+    SELECT s.session_id, t.root, COALESCE(s.est_cost_usd, 0), t.depth + 1
+    FROM sessions s
+    JOIN tree t ON s.parent_session_id = t.session_id
+  )
+  SELECT
+    root,
+    rs.primary_agent AS agent,
+    ROUND(MAX(CASE WHEN tree.depth = 0 THEN tree.est_cost_usd END), 5) AS self_cost,
+    ROUND(COALESCE(SUM(CASE WHEN tree.depth > 0 THEN tree.est_cost_usd END), 0), 5) AS children_cost,
+    ROUND(SUM(tree.est_cost_usd), 5) AS total_cost,
+    COUNT(*) - 1 AS children_count
+  FROM tree
+  JOIN sessions rs ON rs.session_id = tree.root
+  GROUP BY root
+  HAVING children_count > 0 OR total_cost > 0
+  ORDER BY total_cost DESC
+  LIMIT 10
+`) as Record<string, unknown>[];
+
+if (orchRollup.length === 0) {
+  console.log("_No orchestration sessions with child data._\n");
+} else {
+  console.log("| Root Session | Agent | Self Cost | Children Cost | Total Cost | Children # |");
+  console.log("|--------------|-------|-----------|---------------|------------|------------|");
+  for (const r of orchRollup) {
+    console.log(`| ${r.root} | ${r.agent ?? "—"} | ${fmtCost(r.self_cost as number)} | ${fmtCost(r.children_cost as number)} | ${fmtCost(r.total_cost as number)} | ${r.children_count} |`);
+  }
+  console.log();
+}
+
 db.close();
 
 // ── Disclaimer ────────────────────────────────────────────────────────────────────────────────────────

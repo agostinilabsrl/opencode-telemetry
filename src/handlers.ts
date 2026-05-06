@@ -7,6 +7,7 @@ type PendingToolCall = {
   session_id: string;
   tool_name: string;
   skill_name: string | null;
+  tool_call_id: string | null;
   args_size_bytes: number | null;
   start_time: number;
   created_at: string;
@@ -20,6 +21,8 @@ export function createHandlers(db: DbHandle, ctx: PluginInput) {
   const sessionCurrentAgent = new Map<string, string>();
   // callID -> pending tool call metadata
   const pendingToolCalls = new Map<string, PendingToolCall>();
+  // Capture server URL once (from ctx.serverUrl if available)
+  const serverUrl: string | null = ctx.serverUrl ? String(ctx.serverUrl) : null;
 
   function getNextTurnIdx(sessionId: string): number {
     if (!sessionTurnCounters.has(sessionId)) {
@@ -45,6 +48,7 @@ export function createHandlers(db: DbHandle, ctx: PluginInput) {
           project_path: s.directory ?? ctx.directory ?? null,
           worktree_path: ctx.worktree ?? null,
           primary_agent: null,
+          server_url: serverUrl,
         });
       } else if (event.type === "message.updated") {
         const msg = event.properties.info;
@@ -86,6 +90,7 @@ export function createHandlers(db: DbHandle, ctx: PluginInput) {
           session_id: msg.sessionID,
           turn_idx,
           message_id: msg.id,
+          parent_tool_call_id: null, // populated post-hoc via spawned_session_id linkage
           agent,
           model: msg.modelID ?? null,
           provider_id: msg.providerID ?? null,
@@ -133,6 +138,7 @@ export function createHandlers(db: DbHandle, ctx: PluginInput) {
         session_id: input.sessionID,
         tool_name: input.tool,
         skill_name: skillName,
+        tool_call_id: input.callID ?? null,
         args_size_bytes: safeByteLen(output.args),
         start_time: Date.now(),
         created_at: new Date().toISOString(),
@@ -165,6 +171,8 @@ export function createHandlers(db: DbHandle, ctx: PluginInput) {
           (input.tool === "skill"
             ? ((input.args as Record<string, unknown>)?.name as string | null) ?? null
             : null),
+        tool_call_id: input.callID ?? null,
+        spawned_session_id: null, // populated if opencode surfaces child session ID in result metadata
         args_size_bytes: pending?.args_size_bytes ?? safeByteLen(input.args),
         result_size_bytes: safeByteLen(output.output),
         duration_ms,

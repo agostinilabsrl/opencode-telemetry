@@ -1,260 +1,190 @@
 # opencode-telemetry
 
-> **Know exactly what your AI sessions are costing you** — tokens, tools, agents, and dollars, stored locally in a queryable SQLite database. Zero config. Zero cloud. Zero noise.
+Local-first historical telemetry for opencode sessions. Track where your tokens go in agent orchestration chains — without external infrastructure.
 
 [![npm](https://img.shields.io/npm/v/opencode-telemetry?color=CB3837&logo=npm&logoColor=white)](https://www.npmjs.com/package/opencode-telemetry)
-[![license](https://img.shields.io/npm/l/opencode-telemetry?color=blue)](LICENSE)
-[![runtime](https://img.shields.io/badge/runtime-bun-fbf0df?logo=bun&logoColor=000)](https://bun.sh)
-[![opencode](https://img.shields.io/badge/plugin-opencode-6c47ff)](https://opencode.ai)
 
----
+## What it does
 
-## Why?
+- Logs every opencode session to a local SQLite database automatically
+- Aggregates costs across orchestration chains (conductor + all child sessions), showing the true total rather than just the parent's share
+- Forensic per-session inspection: full token trajectory, turn-by-turn context growth, identified delta drivers ("turn 32 grew by 20k tokens — likely a 41KB bash result entered history")
+- CLI binary (`octm`) generates and saves reports to disk without consuming model tokens to re-emit them
+- Zero external dependencies — your data stays on your machine, no collectors required
 
-You're running AI sessions all day. You probably have **no idea**:
+## When to use this plugin
 
-- Which agent burned $4 this morning in three turns
-- Which model your pipeline actually ended up calling
-- Whether prompt caching is actually kicking in
-- How much a single "quick fix" session cost vs a deep refactor
+The opencode ecosystem has three telemetry plugins with different scopes. Pick the one that matches your need:
 
-`opencode-telemetry` plugs into [opencode](https://opencode.ai) and silently logs everything that matters — per turn, per tool call, per session — into a local SQLite file you can query however you like.
+| Need | Plugin |
+|------|--------|
+| Inspect a live session interactively to see how tokens are split right now | [Opencode-Context-Analysis-Plugin](https://github.com/IgorWarzocha/Opencode-Context-Analysis-Plugin) by Igor Warzocha |
+| Stream telemetry to an existing observability backend (Datadog, Honeycomb, Grafana Cloud) | [opencode-plugin-otel](https://github.com/DEVtheOPS/opencode-plugin-otel) by DEVtheOPS |
+| Analyze sessions historically, forensically, locally, with no infrastructure | **opencode-telemetry** (this plugin) |
 
----
+These plugins are complementary, not competing. You can install more than one.
 
-## Prerequisites
+This plugin is built for users who:
+- Run complex orchestration chains (e.g. agent swarms with parent/child session dispatch)
+- Want to analyze sessions days or weeks after they ran
+- Don't have or want an OpenTelemetry collector running
+- Need turn-by-turn forensics to understand "where did those tokens actually go?"
 
-The telemetry plugin itself always runs inside opencode's own Bun process, so the
-database is created and populated regardless of what is in your `PATH`.
+We owe a debt of inspiration to both projects above — the live-decomposition approach (Igor) and the streaming-export model (DEVtheOPS). This plugin fills the third corner: persistent, local, forensic.
 
-The **slash commands** (`/telemetry-report`, `/telemetry-inspect`) require:
-
-- **[Bun](https://bun.sh) ≥ 1.0** in `PATH` — this is a hard requirement
-
-> **Note:** A Node.js ≥ 22.5 fallback (via `node:sqlite`) was attempted but is not
-> currently working correctly. Until that is resolved, **Bun must be available in your
-> `PATH`** for the slash commands to function. opencode itself ships with Bun, so
-> running `bun` from your shell is usually just an install away: https://bun.sh/docs/installation
-
----
-
-## Install
+## Installation
 
 ```bash
-npm install opencode-telemetry
+npm install -g opencode-telemetry
+# or
+bun add -g opencode-telemetry
 ```
 
-Add to your `opencode.json`:
+Add to your opencode config (`~/.config/opencode/config.json`):
 
 ```json
 {
-  "plugin": ["opencode-telemetry"]
+  "plugins": [
+    "opencode-telemetry"
+  ]
 }
 ```
 
-Restart opencode. The database is created automatically on the first event — no setup, no migration, no config file.
+The plugin starts logging automatically. No configuration required.
 
-> **Note:** `npm install opencode-telemetry` is sufficient for telemetry collection.
-> For the slash commands to work, `bun` must be available in `PATH`.
+## Quickstart
 
-> **Database location**
-> `~/.local/share/opencode-telemetry/data.db` on Linux/macOS
-> `%LOCALAPPDATA%\opencode-telemetry\data.db` on Windows
+### Pattern 1 — Just install and forget
 
----
+The plugin starts logging automatically. Nothing to configure. Sessions land in `~/.local/share/opencode-telemetry/data.db`.
 
-## What you get
+### Pattern 2 — Get a 7-day report
 
-| | |
-|---|---|
-| **Per turn** | Input / output / cached / reasoning tokens, model, agent, latency, finish reason, estimated cost |
-| **Per tool call** | Tool name, skill name, args size, result size, duration, success/error |
-| **Per session** | Project path, parent session (subagents), start/end time, aggregate totals |
-
-All stored in three plain SQL tables. No proprietary format, no lock-in.
-
----
-
-## Slash commands
-
-Run these from inside opencode for instant reports.
-
-### `/telemetry-report`
-
-A full 7-day summary rendered as markdown — headline stats, top sessions (with full IDs and slash command entrypoints), per-agent breakdown with cache hit %, per-model breakdown, tool result size stats (p50/p95), skill usage, and cache efficiency:
-
-```
-# Telemetry Report — Last 7 Days
-
-| Metric        | Value     |
-|---------------|-----------|
-| Sessions      | 24        |
-| Turns         | 187       |
-| Total Tokens  | 2,341,880 |
-| Est. Cost     | $9.2341   |
-
-## Top 10 Sessions by Cost
-
-| Session ID                           | Command | Agent       | Tokens    | Cost    | Turns | Started          |
-|--------------------------------------|---------|-------------|-----------|---------|-------|------------------|
-| 3f9a1b2c-4d5e-6f7a-8b9c-0d1e2f3a4b5c | /forge  | forge       | 312,440   | $1.8821 | 22    | 2026-04-27 14:03 |
-| a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d | /swarm  | conductor   | 198,770   | $1.2041 | 14    | 2026-04-26 09:51 |
-...
-
-## Per-Agent Breakdown
-
-| Agent     | Total In    | Total Out | In/Out | Turns | Cache Hit % |
-|-----------|-------------|-----------|--------|-------|-------------|
-| general   | 22,920,701  | 174,980   | 131    | 641   | 68.2%       |
-| conductor | 15,137,011  | 112,143   | 135    | 264   | 71.4%       |
+From terminal (no model token cost):
+```bash
+octm report
 ```
 
-### `/telemetry-inspect <session_id>`
+Or from inside opencode (saves to file, returns the path):
+```
+/telemetry-report
+```
 
-Deep-dive into a single session: metadata (including slash command entrypoint), sub-session agent hops, agent chain summary with cache hit %, turn-by-turn metrics, tool call timeline, per-tool result size stats, skill load summary, and full cost breakdown.
-
-Accepts full session IDs or unique prefixes.
-
-### `/telemetry-db-analyst`
-
-A skill that gives opencode direct SQL access to the telemetry database for custom analysis:
-- Per-hop token breakdown for multi-agent chain runs
-- Context growth analysis (cumulative input tokens across turns)
-- Tool result p50/p95 by tool type
-- Cost comparison across runs of the same slash command
-- Any ad-hoc query not covered by the canned reports
-
----
-
-## Direct SQL access
-
-The SQLite file is the API. Every query you can imagine, any tool you already use.
+### Pattern 3 — Forensic inspect of a specific session
 
 ```bash
-DB=~/.local/share/opencode-telemetry/data.db
-
-# Top sessions by cost this week
-sqlite3 $DB < queries/top-consumers-7d.sql
-
-# Is prompt caching actually working?
-sqlite3 $DB < queries/cache-efficiency.sql
-
-# Which agents have bloated context (high input/output ratio)?
-sqlite3 $DB < queries/ratio-in-out-by-agent.sql
-
-# Skills loaded more than once in the same session (wasted tokens)
-sqlite3 $DB < queries/duplicate-skills.sql
-
-# Largest tool result payloads
-sqlite3 $DB < queries/largest-tool-results.sql
-
-# Daily token trend — last 30 days
-sqlite3 $DB < queries/daily-token-trend.sql
+octm inspect ses_2073813f
 ```
 
-Or go fully ad-hoc:
+Add `--content` to fetch and analyze the full prompt content for every turn (requires opencode server running; results are cached locally):
 
 ```bash
-sqlite3 $DB \
-  "SELECT model, SUM(input_tokens+output_tokens) AS tok
-   FROM turns GROUP BY model ORDER BY tok DESC;"
+octm inspect ses_2073813f --content
 ```
 
-Works with any SQLite client — [DB Browser for SQLite](https://sqlitebrowser.org), [Datasette](https://datasette.io), [TablePlus](https://tableplus.com), Grafana, whatever you already have.
+This produces a report with:
+- Token trajectory chart across all turns
+- Top turn deltas with identified causes
+- Agent chain breakdown
+- Child session rollup with aggregated costs
 
----
+## Commands reference
 
-## Schema
-
-Three tables, no surprises.
+### `octm` CLI
 
 ```
-sessions
-├── session_id          TEXT  PRIMARY KEY
-├── project_path        TEXT
-├── primary_agent       TEXT  (first agent seen in session)
-├── slash_command       TEXT  (inferred from primary_agent, e.g. /forge)
-├── parent_session_id   TEXT  (set for subagent sessions)
-├── started_at          TEXT
-├── ended_at            TEXT
-├── total_turns         INTEGER
-├── total_input_tokens  INTEGER
-├── total_output_tokens INTEGER
-├── total_cached_read   INTEGER
-├── total_cached_write  INTEGER
-└── est_cost_usd        REAL
+octm report [--days N] [--save] [--no-save] [--format md|json]
+  Generate a report for the last N days (default: 7).
+  Saves to ~/.local/share/opencode-telemetry/reports/ by default.
+  --no-save: print to stdout only.
+  --format json: output structured JSON.
 
-turns
-├── turn_id             TEXT  PRIMARY KEY
-├── session_id          TEXT  → sessions
-├── model               TEXT
-├── provider            TEXT
-├── agent               TEXT
-├── input_tokens        INTEGER
-├── output_tokens       INTEGER
-├── cached_read_tokens  INTEGER
-├── cached_write_tokens INTEGER
-├── reasoning_tokens    INTEGER
-├── latency_ms          INTEGER
-├── finish_reason       TEXT
-├── thinking_level      TEXT
-├── turn_index          INTEGER
-├── created_at          TEXT
-└── est_cost_usd        REAL
+octm inspect <session_id> [--content] [--save] [--no-save]
+  Deep-dive into a session. Supports ID prefix matching.
+  --content: fetch and analyze full prompt content (lazy, cached).
+  Saves to ~/.local/share/opencode-telemetry/reports/ by default.
 
-tool_calls
-├── call_id             TEXT  PRIMARY KEY
-├── session_id          TEXT  → sessions
-├── turn_id             TEXT  → turns
-├── tool_name           TEXT
-├── skill_name          TEXT  (populated for skill tool invocations)
-├── args_bytes          INTEGER
-├── result_bytes        INTEGER
-├── duration_ms         INTEGER
-├── status              TEXT  (success | error | timeout)
-└── called_at           TEXT
+octm config show
+octm config get <key>
+octm config set <key> <value>
+octm config reset
+  Manage ~/.config/opencode-telemetry/config.json.
+  Keys use dot notation: content_cache.enabled, sdk_bridge.enabled, deployment_mode.
+
+octm cache stats
+octm cache clear [--older-than <N>d]
+octm cache prefetch <session_id>
+  Manage the content cache.
+
+octm sql "<query>"
+octm sql --file <path>
+  Run a read-only SQL query against the telemetry DB.
+
+octm help
 ```
 
-Full DDL: [`src/db.ts`](src/db.ts)
+### Slash commands
 
----
+| Command | What it does |
+|---------|-------------|
+| `/telemetry-report` | Runs `octm report --save`, returns the saved file path |
+| `/telemetry-inspect <session_id>` | Runs `octm inspect --save`, returns the saved file path |
+| `/telemetry-db-analyst` | Opens a SQL skill for direct DB access |
 
-## Supported models
+Slash commands return only the file path — they do not re-emit report contents through the model.
 
-Cost estimates (`est_cost_usd`) are calculated for:
+## Configuration
 
-| Provider  | Models |
-|-----------|--------|
-| Anthropic | Claude Opus 4, Sonnet 4.6 / 4.5, Haiku 4.5 |
-| OpenAI    | GPT-4.5, GPT-4.1, o3, o4-mini |
-| Google    | Gemini 2.5 Pro, Gemini 2.5 Flash |
-| Local     | Any local/ollama model (rates = $0) |
+Config file: `~/.config/opencode-telemetry/config.json`
 
-`est_cost_usd` is stored as `NULL` for unknown models — never fabricated. Rates are a static snapshot; PRs to update [`src/pricing.json`](src/pricing.json) are welcome.
+```json
+{
+  "version": 1,
+  "content_cache": {
+    "enabled": true,
+    "path": "~/.local/share/opencode-telemetry/content-cache"
+  },
+  "sdk_bridge": {
+    "enabled": true
+  },
+  "deployment_mode": "auto"
+}
+```
 
----
+| Key | Values | Description |
+|-----|--------|-------------|
+| `content_cache.enabled` | `true` / `false` | Whether fetched prompt content is cached to disk |
+| `content_cache.path` | path string | Where to store the cache |
+| `sdk_bridge.enabled` | `true` / `false` | Whether `--content` fetching is active |
+| `deployment_mode` | `auto` / `single_user` / `server` | In `server` mode, content cache is disabled by default |
 
-## Privacy
+## Privacy and storage
 
-- **Local only.** No network calls, ever. The plugin has no outbound connectivity.
-- **No prompt content.** Only byte sizes, token counts, timings, and structural metadata are stored. Your prompts and tool results are never written to disk by this plugin.
-- **No phone-home.** The plugin itself is not instrumented or tracked.
+This plugin stores data locally. Two locations matter:
 
----
+- **Metrics database** (`~/.local/share/opencode-telemetry/data.db`): contains token counts, byte sizes, durations, session metadata. Never contains prompt content.
+- **Content cache** (`~/.local/share/opencode-telemetry/content-cache/`): populated only when you run `octm inspect --content`. Caches the prompt content fetched via opencode SDK so re-running analyses is fast.
 
-## Roadmap
+Disable the content cache persistently:
 
-- [ ] Auto-cleanup TTL (purge sessions older than N days)
-- [ ] Anomaly detection queries (cost spikes, token regressions)
-- [ ] Web dashboard — if there's demand, open an issue
+```bash
+octm config set content_cache.enabled false
+```
 
----
+In server-mode opencode deployments, the content cache is disabled by default. No data is sent off your machine. There is no telemetry-of-the-telemetry.
+
+## Known limitations
+
+- **Subagent attribution** requires opencode to populate `Session.parentID` when spawning child sessions. This is structurally correct in v0.2 but cannot be empirically verified without a live Conductor session. If parent-child costs still show a discrepancy, check `docs/v0.2-investigation.md` for the diagnostic queries.
+- **Token composition percentages** are byte-based (±15% on absolutes, <5% on ratios). For exact tokenizer counts use [Opencode-Context-Analysis-Plugin](https://github.com/IgorWarzocha/Opencode-Context-Analysis-Plugin).
+- **`--content` requires opencode server** to be running. Without it, only cached content is available.
+- **Server deployments**: content cache disabled by default for privacy.
+- **No real-time export** — for streaming to observability backends, see [opencode-plugin-otel](https://github.com/DEVtheOPS/opencode-plugin-otel).
 
 ## Contributing
 
-PRs welcome — especially for `pricing.json` updates and new canned queries.
-Please keep the plugin source under ~800 lines total.
+Issues and PRs welcome at [github.com/agostinilabsrl/opencode-telemetry](https://github.com/agostinilabsrl/opencode-telemetry).
 
 ## License
 
-[MIT](LICENSE)
+MIT

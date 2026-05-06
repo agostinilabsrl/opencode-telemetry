@@ -1,19 +1,21 @@
 ---
-description: Show a markdown report of recent telemetry (last 7 days by default).
+description: Generate and save a 7-day telemetry report. Returns the saved file path.
 ---
 
 You are running the telemetry-report command.
 
-Find the opencode-telemetry plugin installation directory and run the report script with bun:
+Find the `octm` CLI and run it with `--save`, which writes the report to disk and returns the path:
 
 ```bash
-bun run "$(bun pm ls -g 2>/dev/null | grep opencode-telemetry | awk '{print $1}')/scripts/report.ts" 2>/dev/null \
-  || bun run ~/.config/opencode/plugin/opencode-telemetry/scripts/report.ts 2>/dev/null \
-  || echo "ERROR: could not locate the opencode-telemetry report script. Make sure bun is in PATH and opencode-telemetry is installed."
+octm report --save 2>&1 \
+  || bun run "$(bun pm ls -g 2>/dev/null | grep opencode-telemetry | awk '{print $1}')/bin/cli.ts" report --save 2>&1 \
+  || bun run ~/.config/opencode/plugin/opencode-telemetry/bin/cli.ts report --save 2>&1 \
+  || echo "ERROR: could not locate octm. Make sure bun is in PATH and opencode-telemetry is installed."
 ```
 
-If the above fails, locate the plugin with `find ~/.config/opencode -name "report.ts" 2>/dev/null | head -1` and run it with `bun run <path>`.
+The command will output the report followed by a line like:
+```
+Report saved to: ~/.local/share/opencode-telemetry/reports/report-2026-05-06T10-30-00.md
+```
 
-**Note:** Bun is required. The Node.js fallback is not currently functional.
-
-Display the output verbatim. Do not interpret, summarize, or modify.
+**Return only the saved file path to the user** — do not re-read or re-emit the report contents. The user can open the file directly. If the command fails, show the error output.

@@ -77,7 +77,28 @@ console.log(`| Output Tokens | ${fmtNum(s.total_output_tokens as number)} |`);
 console.log(`| Cached Read | ${fmtNum(s.total_cached_read as number)} |`);
 console.log(`| Cached Write | ${fmtNum(s.total_cached_write as number)} |`);
 console.log(`| Reasoning Tokens | ${fmtNum(s.total_reasoning as number)} |`);
-console.log(`| Est. Cost | ${fmtCost(s.est_cost_usd as number)} |`);
+console.log(`| Est. Cost (self) | ${fmtCost(s.est_cost_usd as number)} |`);
+
+// Compute recursive children cost via CTE
+const costRollup = q(`
+  WITH RECURSIVE tree(session_id, est_cost_usd) AS (
+    SELECT session_id, COALESCE(est_cost_usd, 0) FROM sessions WHERE session_id = $id
+    UNION ALL
+    SELECT s.session_id, COALESCE(s.est_cost_usd, 0)
+    FROM sessions s JOIN tree t ON s.parent_session_id = t.session_id
+  )
+  SELECT
+    ROUND(SUM(est_cost_usd) - (SELECT COALESCE(est_cost_usd, 0) FROM sessions WHERE session_id = $id), 5) AS children_cost,
+    ROUND(SUM(est_cost_usd), 5) AS total_cost,
+    COUNT(*) - 1 AS children_count
+  FROM tree
+`, { $id: resolvedId })[0] as Record<string, unknown>;
+
+if ((costRollup?.children_count as number) > 0) {
+  console.log(`| Est. Cost (children) | ${fmtCost(costRollup.children_cost as number)} |`);
+  console.log(`| Est. Cost (total) | ${fmtCost(costRollup.total_cost as number)} |`);
+  console.log(`| Child Sessions | ${costRollup.children_count} |`);
+}
 console.log();
 
 // ── Sub-sessions (agent hops) ─────────────────────────────────────────────────────────────────────────
@@ -133,23 +154,72 @@ if (agentChain.length === 0) {
   console.log();
 }
 
-// ── Per-turn metrics ──────────────────────────────────────────────────────────────────────────────────
+// ── Token trajectory ──────────────────────────────────────────────────────────────────────────────────
 
-console.log(`## Turns\n`);
 const turns = q(`
   SELECT turn_idx, agent, model, input_tokens, output_tokens,
-         cached_read_tokens, reasoning_tokens, latency_ms, finish_reason, created_at
+         cached_read_tokens, cached_write_tokens, reasoning_tokens, latency_ms, finish_reason, created_at
   FROM turns WHERE session_id = $id ORDER BY turn_idx
 `, { $id: resolvedId }) as Record<string, unknown>[];
 
+if (turns.length > 0) {
+  console.log(`## Token Trajectory (cached read per turn)\n`);
+  const contextValues = turns.map(t => ((t.input_tokens as number) ?? 0) + ((t.cached_read_tokens as number) ?? 0));
+  const maxCtx = Math.max(...contextValues, 1);
+  const blocks = ["▏", "▎", "▍", "▌", "▋", "▊", "▉", "█"];
+
+  for (let i = 0; i < turns.length; i++) {
+    const t = turns[i];
+    const v = contextValues[i];
+    const ratio = v / maxCtx;
+    const block = ratio === 0 ? "▏" : blocks[Math.min(Math.floor(ratio * blocks.length), blocks.length - 1)];
+    const prevV = i > 0 ? contextValues[i - 1] : v;
+    const delta = i > 0 && prevV > 0 ? ((v - prevV) / prevV * 100).toFixed(0) : null;
+    const deltaStr = delta !== null && Math.abs(Number(delta)) >= 10 ? `  ← +${delta}%` : "";
+    console.log(`turn ${String(t.turn_idx).padStart(3)}: ${block.repeat(Math.max(1, Math.round(ratio * 8)))} ${fmtNum(v)}${deltaStr}`);
+  }
+  console.log();
+}
+
+// ── Top deltas ────────────────────────────────────────────────────────────────────────────────────────
+
+if (turns.length > 1) {
+  const contextValues = turns.map(t => ((t.input_tokens as number) ?? 0) + ((t.cached_read_tokens as number) ?? 0));
+  const deltas: Array<{ turn_idx: number; delta: number; delta_pct: number }> = [];
+  for (let i = 1; i < turns.length; i++) {
+    const prev = contextValues[i - 1];
+    const curr = contextValues[i];
+    const d = curr - prev;
+    deltas.push({ turn_idx: turns[i].turn_idx as number, delta: d, delta_pct: prev > 0 ? d / prev * 100 : 0 });
+  }
+  const topDeltas = [...deltas].sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta)).slice(0, 5);
+
+  console.log(`## Top Turn Deltas\n`);
+  console.log("| Turn | Δ tokens | Δ % |");
+  console.log("|------|----------|-----|");
+  for (const d of topDeltas) {
+    const sign = d.delta >= 0 ? "+" : "";
+    console.log(`| ${d.turn_idx} | ${sign}${fmtNum(d.delta)} | ${sign}${d.delta_pct.toFixed(1)}% |`);
+  }
+  console.log();
+}
+
+// ── Per-turn metrics ──────────────────────────────────────────────────────────────────────────────────
+
+console.log(`## Turns\n`);
 if (turns.length === 0) {
   console.log("_No turns recorded._\n");
 } else {
-  console.log("| # | Agent | Model | In | Out | Cached | Reasoning | Latency | Finish |");
-  console.log("|---|-------|-------|-----|-----|--------|-----------|---------|--------|")
-  for (const t of turns) {
+  console.log("| # | Agent | Model | In | Out | Cached | Δ% | Reasoning | Latency | Finish |");
+  console.log("|---|-------|-------|-----|-----|--------|----|-----------|---------|--------|");
+  const contextValues2 = turns.map(t => ((t.input_tokens as number) ?? 0) + ((t.cached_read_tokens as number) ?? 0));
+  for (let i = 0; i < turns.length; i++) {
+    const t = turns[i];
+    const prev = i > 0 ? contextValues2[i - 1] : null;
+    const curr = contextValues2[i];
+    const deltaPct = prev != null && prev > 0 ? `${((curr - prev) / prev * 100).toFixed(1)}%` : "—";
     console.log(
-      `| ${t.turn_idx} | ${t.agent ?? "—"} | ${t.model ?? "—"} | ${fmtNum(t.input_tokens as number)} | ${fmtNum(t.output_tokens as number)} | ${fmtNum(t.cached_read_tokens as number)} | ${fmtNum(t.reasoning_tokens as number)} | ${fmtMs(t.latency_ms as number)} | ${t.finish_reason ?? "—"} |`
+      `| ${t.turn_idx} | ${t.agent ?? "—"} | ${t.model ?? "—"} | ${fmtNum(t.input_tokens as number)} | ${fmtNum(t.output_tokens as number)} | ${fmtNum(t.cached_read_tokens as number)} | ${deltaPct} | ${fmtNum(t.reasoning_tokens as number)} | ${fmtMs(t.latency_ms as number)} | ${t.finish_reason ?? "—"} |`
     );
   }
   console.log();

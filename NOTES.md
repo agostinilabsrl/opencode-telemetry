@@ -189,3 +189,39 @@ Per spec §5.2 preference: `bun:sqlite` (built-in, zero external dependency) was
    `--external bun:sqlite` prevents the bundler from trying to resolve the Bun-only module. In the bundled output, `require("bun:sqlite")` only appears inside the `typeof Bun !== "undefined"` branch, so it is never executed under Node. The produced `scripts/report.js` and `scripts/inspect.js` are included in the npm package (via the existing `"scripts/"` entry in `files`) but excluded from git (added to `.gitignore`).
 
 **Runtime requirement for Node fallback**: Node ≥ 22.5 (first stable release with `node:sqlite` built in). No external dependencies are added. The plugin core (`src/`) continues to use `bun:sqlite` exclusively and is unaffected.
+
+---
+
+## 15. Subagent Attribution Verification Status (Phase 0 Investigation)
+
+**Question**: Is `parent_session_id` correctly captured when a Conductor session dispatches ACT/REVIEW subagents? A $2.63 vs ~$10 billing discrepancy suggests child costs may be invisible.
+
+**Code-level findings** (verified 2026-05-06):
+
+| Component | Status | Location |
+|---|---|---|
+| `Session.parentID?: string` exists in SDK type | ✓ Confirmed | `@opencode-ai/sdk/dist/gen/types.gen.d.ts:469` |
+| Handler reads `s.parentID ?? null` | ✓ Confirmed | `src/handlers.ts:44` |
+| Schema column `parent_session_id TEXT` with index | ✓ Confirmed | `src/db.ts:11, 30` |
+| Inspector queries `WHERE parent_session_id = $id` | ✓ Confirmed | `scripts/inspect.ts:89` |
+| Smoke test exercises parent-child round-trip | ✓ Added | `scripts/smoke.ts` |
+
+**What remains unconfirmed**: Whether opencode *actually populates* `parentID` on the `Session` object when spawning subagent sessions. The field is optional in the SDK type (`parentID?: string`), meaning opencode may not set it. This can only be verified against a live Conductor session.
+
+**How to verify empirically** (run once a real Conductor session exists in the DB):
+```sql
+-- Find a conductor session with at least 5 tool dispatches
+SELECT session_id, primary_agent, total_turns, total_tool_calls, est_cost_usd
+FROM sessions
+WHERE primary_agent = 'conductor' AND total_tool_calls >= 5
+ORDER BY est_cost_usd DESC LIMIT 5;
+
+-- Check if children were recorded for one of those sessions
+SELECT session_id, parent_session_id, primary_agent, total_turns, est_cost_usd
+FROM sessions
+WHERE parent_session_id = '<chosen_session_id>'
+   OR session_id = '<chosen_session_id>'
+ORDER BY started_at;
+```
+
+If no child rows appear (`parent_session_id` always NULL), opencode does not populate `parentID` and the attribution path is broken at the source. In that case, the fix would require correlating sessions via timestamp proximity or a new opencode event payload field.
