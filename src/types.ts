@@ -21,6 +21,7 @@ export interface TurnRow {
   session_id: string;
   turn_idx: number;
   message_id: string | null;
+  parent_tool_call_id: string | null;
   agent: string | null;
   model: string | null;
   provider_id: string | null;
@@ -40,6 +41,8 @@ export interface ToolCallRow {
   turn_idx: number | null;
   tool_name: string;
   skill_name: string | null;
+  tool_call_id: string | null;
+  spawned_session_id: string | null;
   args_size_bytes: number | null;
   result_size_bytes: number | null;
   duration_ms: number | null;
@@ -53,6 +56,7 @@ export interface PendingToolCall {
   turn_idx: number | null;
   tool_name: string;
   skill_name: string | null;
+  tool_call_id: string | null;
   args_size_bytes: number | null;
   start_time: number;
   created_at: string;

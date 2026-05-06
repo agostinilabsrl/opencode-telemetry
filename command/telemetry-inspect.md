@@ -1,22 +1,24 @@
 ---
-description: Deep-dive into a specific session by ID. Shows per-turn metrics, tool calls, and skill usage.
-argument-hint: <session_id>
+description: Inspect a session by ID. Shows token trajectory, agent chain, and per-turn breakdown. Returns the saved file path.
+argument-hint: <session_id> [--content]
 ---
 
-You are running telemetry-inspect for session ID: $ARGUMENTS
+You are running telemetry-inspect for session: $ARGUMENTS
 
-Find the opencode-telemetry plugin and run the inspect script with bun:
+Run the inspect command with `--save`, which writes the report to disk and returns the path:
 
 ```bash
-bun run "$(bun pm ls -g 2>/dev/null | grep opencode-telemetry | awk '{print $1}')/scripts/inspect.ts" "$ARGUMENTS" 2>/dev/null \
-  || bun run ~/.config/opencode/plugin/opencode-telemetry/scripts/inspect.ts "$ARGUMENTS" 2>/dev/null \
-  || echo "ERROR: could not locate the opencode-telemetry inspect script. Make sure bun is in PATH and opencode-telemetry is installed."
+octm inspect $ARGUMENTS --save 2>&1 \
+  || bun run "$(bun pm ls -g 2>/dev/null | grep opencode-telemetry | awk '{print $1}')/bin/cli.ts" inspect $ARGUMENTS --save 2>&1 \
+  || bun run ~/.config/opencode/plugin/opencode-telemetry/bin/cli.ts inspect $ARGUMENTS --save 2>&1 \
+  || echo "ERROR: could not locate octm. Make sure bun is in PATH and opencode-telemetry is installed."
 ```
 
-If the above fails, locate the plugin with `find ~/.config/opencode -name "inspect.ts" 2>/dev/null | head -1` and run it with `bun run <path> "$ARGUMENTS"`.
+The command will output the report followed by a line like:
+```
+Inspect report saved to: ~/.local/share/opencode-telemetry/reports/inspect-<session_short>-2026-05-06T10-30-00.md
+```
 
-**Note:** Bun is required. The Node.js fallback is not currently functional.
+**Return only the saved file path to the user** — do not re-read or re-emit the report contents. The user can open the file directly.
 
-Display the metrics output verbatim.
-
-If the user wants to see the actual message contents for this session, suggest they use opencode's native session navigation (via the history feature or share URL if available).
+To include full prompt content in the report (requires opencode server running), add `--content` to the arguments.

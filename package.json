@@ -1,16 +1,24 @@
 {
   "name": "opencode-telemetry",
-  "version": "0.1.0",
-  "description": "Continuous local telemetry for opencode sessions. Tracks tokens, tool calls, and skills per agent/model/session into a local SQLite database.",
+  "version": "0.2.0",
+  "description": "Local-first historical telemetry for opencode sessions. Track where your tokens go in agent orchestration chains — without external infrastructure.",
   "type": "module",
   "main": "src/index.ts",
+  "bin": {
+    "opencode-telemetry": "./bin/cli.js",
+    "octm": "./bin/cli.js"
+  },
   "files": [
     "src/",
+    "bin/",
     "command/",
     "queries/",
     "scripts/",
+    "migrations/",
+    "docs/",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "CHANGELOG.md"
   ],
   "keywords": [
     "opencode",
@@ -19,7 +27,8 @@
     "observability",
     "llm",
     "cost-tracking",
-    "agentic"
+    "agentic",
+    "orchestration"
   ],
   "license": "MIT",
   "repository": {
@@ -29,8 +38,11 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "smoke": "bun run scripts/smoke.ts",
+    "octm": "bun run bin/cli.ts",
     "build:scripts": "bun build scripts/report.ts scripts/inspect.ts --target=node --external bun:sqlite --outdir=scripts",
-    "prepublishOnly": "bun run build:scripts"
+    "build:cli": "bun build bin/cli.ts --target=node --external bun:sqlite --outfile=bin/cli.js",
+    "build": "bun run build:scripts && bun run build:cli",
+    "prepublishOnly": "bun run build"
   },
   "peerDependencies": {
     "@opencode-ai/plugin": "*"

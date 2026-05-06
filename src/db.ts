@@ -92,6 +92,7 @@ export interface DbHandle {
     primary_agent?: string | null;
     project_path?: string | null;
     worktree_path?: string | null;
+    server_url?: string | null;
   }): void;
   updatePrimaryAgent(session_id: string, agent: string): void;
   incrementSessionTurns(session_id: string, cost: number | null, input: number, output: number, cached_read: number, cached_write: number, reasoning: number): void;
@@ -99,6 +100,7 @@ export interface DbHandle {
   incrementSessionToolCalls(session_id: string): void;
   finalizeSession(session_id: string): void;
   getMaxTurnIdx(session_id: string): number;
+  getServerUrl(): string | null;
   close(): void;
 }
 
@@ -114,20 +116,29 @@ export function initDatabase(): DbHandle {
 
   // Migrations: add columns that may not exist in older databases (errors are swallowed)
   try { db.exec("ALTER TABLE sessions ADD COLUMN slash_command TEXT"); } catch { /* already exists */ }
+  // v0.2 migration
+  try { db.exec("ALTER TABLE turns ADD COLUMN parent_tool_call_id TEXT"); } catch { /* already exists */ }
+  try { db.exec("ALTER TABLE tool_calls ADD COLUMN tool_call_id TEXT"); } catch { /* already exists */ }
+  try { db.exec("ALTER TABLE tool_calls ADD COLUMN spawned_session_id TEXT"); } catch { /* already exists */ }
+  try { db.exec("ALTER TABLE sessions ADD COLUMN server_url TEXT"); } catch { /* already exists */ }
+  try { db.exec("CREATE INDEX IF NOT EXISTS idx_turns_parent_tool ON turns(parent_tool_call_id) WHERE parent_tool_call_id IS NOT NULL"); } catch { /* ignore */ }
+  try { db.exec("CREATE INDEX IF NOT EXISTS idx_tool_calls_tool_id ON tool_calls(tool_call_id) WHERE tool_call_id IS NOT NULL"); } catch { /* ignore */ }
+  try { db.exec("CREATE INDEX IF NOT EXISTS idx_tool_calls_spawned ON tool_calls(spawned_session_id) WHERE spawned_session_id IS NOT NULL"); } catch { /* ignore */ }
+  try { db.exec("INSERT OR REPLACE INTO _meta (key, value) VALUES ('schema_version', '2')"); } catch { /* ignore */ }
 
   const stmtUpsertSession = db.prepare(`
-    INSERT INTO sessions (session_id, parent_session_id, started_at, primary_agent, project_path, worktree_path)
-    VALUES ($session_id, $parent_session_id, $started_at, $primary_agent, $project_path, $worktree_path)
+    INSERT INTO sessions (session_id, parent_session_id, started_at, primary_agent, project_path, worktree_path, server_url)
+    VALUES ($session_id, $parent_session_id, $started_at, $primary_agent, $project_path, $worktree_path, $server_url)
     ON CONFLICT(session_id) DO NOTHING
   `);
 
   const stmtInsertTurn = db.prepare(`
     INSERT OR IGNORE INTO turns
-      (session_id, turn_idx, message_id, agent, model, provider_id, thinking_level,
+      (session_id, turn_idx, message_id, parent_tool_call_id, agent, model, provider_id, thinking_level,
        input_tokens, output_tokens, cached_read_tokens, cached_write_tokens,
        reasoning_tokens, latency_ms, finish_reason, created_at)
     VALUES
-      ($session_id, $turn_idx, $message_id, $agent, $model, $provider_id, $thinking_level,
+      ($session_id, $turn_idx, $message_id, $parent_tool_call_id, $agent, $model, $provider_id, $thinking_level,
        $input_tokens, $output_tokens, $cached_read_tokens, $cached_write_tokens,
        $reasoning_tokens, $latency_ms, $finish_reason, $created_at)
   `);
@@ -146,11 +157,11 @@ export function initDatabase(): DbHandle {
 
   const stmtInsertToolCall = db.prepare(`
     INSERT INTO tool_calls
-      (session_id, turn_idx, tool_name, skill_name, args_size_bytes,
-       result_size_bytes, duration_ms, status, error_message, created_at)
+      (session_id, turn_idx, tool_name, skill_name, tool_call_id, spawned_session_id,
+       args_size_bytes, result_size_bytes, duration_ms, status, error_message, created_at)
     VALUES
-      ($session_id, $turn_idx, $tool_name, $skill_name, $args_size_bytes,
-       $result_size_bytes, $duration_ms, $status, $error_message, $created_at)
+      ($session_id, $turn_idx, $tool_name, $skill_name, $tool_call_id, $spawned_session_id,
+       $args_size_bytes, $result_size_bytes, $duration_ms, $status, $error_message, $created_at)
   `);
 
   const stmtIncrementToolCalls = db.prepare(`
@@ -191,6 +202,7 @@ export function initDatabase(): DbHandle {
           $primary_agent: fields.primary_agent ?? null,
           $project_path: fields.project_path ?? null,
           $worktree_path: fields.worktree_path ?? null,
+          $server_url: fields.server_url ?? null,
         });
       } catch (err) {
         console.warn("[opencode-telemetry] upsertSession failed:", err);
@@ -211,6 +223,7 @@ export function initDatabase(): DbHandle {
           $session_id: row.session_id,
           $turn_idx: row.turn_idx,
           $message_id: row.message_id,
+          $parent_tool_call_id: row.parent_tool_call_id ?? null,
           $agent: row.agent,
           $model: row.model,
           $provider_id: row.provider_id,
@@ -252,6 +265,8 @@ export function initDatabase(): DbHandle {
           $turn_idx: row.turn_idx,
           $tool_name: row.tool_name,
           $skill_name: row.skill_name,
+          $tool_call_id: row.tool_call_id ?? null,
+          $spawned_session_id: row.spawned_session_id ?? null,
           $args_size_bytes: row.args_size_bytes,
           $result_size_bytes: row.result_size_bytes,
           $duration_ms: row.duration_ms,
@@ -286,6 +301,17 @@ export function initDatabase(): DbHandle {
         return row?.max_idx ?? -1;
       } catch {
         return -1;
+      }
+    },
+
+    getServerUrl() {
+      try {
+        const row = db.query(
+          "SELECT server_url FROM sessions WHERE server_url IS NOT NULL ORDER BY started_at DESC LIMIT 1"
+        ).get() as { server_url: string } | null;
+        return row?.server_url ?? null;
+      } catch {
+        return null;
       }
     },
 
