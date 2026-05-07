@@ -54,29 +54,50 @@ console.log();
 
 console.log(`## Top 10 Sessions by Cost\n`);
 const topSessions = q(`
+  WITH RECURSIVE tree(session_id, root, est_cost_usd) AS (
+    SELECT session_id, session_id AS root, COALESCE(est_cost_usd, 0) FROM sessions
+    UNION ALL
+    SELECT s.session_id, t.root, COALESCE(s.est_cost_usd, 0)
+    FROM sessions s JOIN tree t ON s.parent_session_id = t.session_id
+  ),
+  rollup AS (
+    SELECT
+      root,
+      ROUND(MAX(CASE WHEN tree.session_id = tree.root THEN tree.est_cost_usd END), 5) AS self_cost,
+      ROUND(COALESCE(SUM(CASE WHEN tree.session_id != tree.root THEN tree.est_cost_usd END), 0), 5) AS children_cost,
+      ROUND(SUM(tree.est_cost_usd), 5) AS total_cost,
+      COUNT(*) - 1 AS children_count
+    FROM tree GROUP BY root
+  )
   SELECT
-    session_id AS id,
-    COALESCE(slash_command, CASE WHEN primary_agent IS NOT NULL THEN '/' || primary_agent ELSE '—' END) AS command,
-    COALESCE(primary_agent, '—') AS agent,
-    COALESCE(project_path, '—') AS project,
-    total_input_tokens + total_output_tokens AS tokens,
-    est_cost_usd AS cost,
-    total_turns AS turns,
-    substr(started_at, 1, 16) AS started
-  FROM sessions
-  WHERE started_at >= datetime('now', ${WINDOW})
-    AND est_cost_usd IS NOT NULL
-  ORDER BY est_cost_usd DESC
+    s.session_id AS id,
+    COALESCE(s.slash_command, CASE WHEN s.primary_agent IS NOT NULL THEN '/' || s.primary_agent ELSE '—' END) AS command,
+    COALESCE(s.primary_agent, '—') AS agent,
+    s.total_input_tokens + s.total_output_tokens AS tokens,
+    r.self_cost AS cost,
+    r.children_cost,
+    r.total_cost,
+    r.children_count,
+    s.total_turns AS turns,
+    substr(s.started_at, 1, 16) AS started
+  FROM sessions s
+  JOIN rollup r ON r.root = s.session_id
+  WHERE s.started_at >= datetime('now', ${WINDOW})
+    AND s.parent_session_id IS NULL
+    AND r.self_cost IS NOT NULL
+  ORDER BY r.total_cost DESC
   LIMIT 10
 `) as Record<string, unknown>[];
 
 if (topSessions.length === 0) {
   console.log("_No sessions with cost data._\n");
 } else {
-  console.log("| Session ID | Command | Agent | Tokens | Cost | Turns | Started |");
-  console.log("|------------|---------|-------|--------|------|-------|---------|")
+  console.log("| Session ID | Command | Agent | Tokens | Self Cost | Children | Total Cost | Turns | Started |");
+  console.log("|------------|---------|-------|--------|-----------|----------|------------|-------|---------|");
   for (const r of topSessions) {
-    console.log(`| ${r.id} | ${r.command} | ${r.agent} | ${fmtNum(r.tokens as number)} | ${fmtCost(r.cost as number)} | ${r.turns} | ${r.started} |`);
+    const hasChildren = (r.children_count as number) > 0;
+    const childrenCost = hasChildren ? fmtCost(r.children_cost as number) + " ▲" : "—";
+    console.log(`| ${r.id} | ${r.command} | ${r.agent} | ${fmtNum(r.tokens as number)} | ${fmtCost(r.cost as number)} | ${childrenCost} | ${fmtCost(r.total_cost as number)} | ${r.turns} | ${r.started} |`);
   }
   console.log();
 }
@@ -291,6 +312,7 @@ const cache = q(`
     COALESCE(provider_id, '—') AS provider,
     COALESCE(model, '—') AS model,
     SUM(COALESCE(cached_read_tokens, 0)) AS cached,
+    SUM(COALESCE(cached_write_tokens, 0)) AS cache_writes,
     SUM(COALESCE(input_tokens, 0)) AS fresh,
     ROUND(100.0 * SUM(COALESCE(cached_read_tokens, 0)) /
       NULLIF(SUM(COALESCE(cached_read_tokens, 0) + COALESCE(input_tokens, 0)), 0), 1) AS hit_pct
@@ -300,13 +322,26 @@ const cache = q(`
   ORDER BY hit_pct DESC
 `) as Record<string, unknown>[];
 
+import pricingData from "../src/pricing.json" with { type: "json" };
+type PricingEntry = { input_per_mtok: number; output_per_mtok: number; cache_read_per_mtok: number; cache_write_per_mtok: number };
+const pricing = pricingData as Record<string, PricingEntry | string>;
+
+function cacheSavings(provider: string, model: string, cacheReadTok: number): string {
+  const key = `${provider}/${model}`;
+  const entry = pricing[key];
+  if (!entry || typeof entry === "string") return "N/A";
+  const saved = (cacheReadTok * (entry.input_per_mtok - entry.cache_read_per_mtok)) / 1_000_000;
+  return `$${saved.toFixed(4)}`;
+}
+
 if (cache.length === 0) {
   console.log("_No cache data._\n");
 } else {
-  console.log("| Provider | Model | Cached | Fresh | Hit % |");
-  console.log("|----------|-------|--------|-------|-------|")
+  console.log("| Provider | Model | Cache Reads | Cache Writes | Fresh Input | Hit % | Savings vs No-Cache |");
+  console.log("|----------|-------|-------------|--------------|-------------|-------|---------------------|");
   for (const r of cache) {
-    console.log(`| ${r.provider} | ${r.model} | ${fmtNum(r.cached as number)} | ${fmtNum(r.fresh as number)} | ${r.hit_pct ?? "—"}% |`);
+    const savings = cacheSavings(String(r.provider), String(r.model), r.cached as number);
+    console.log(`| ${r.provider} | ${r.model} | ${fmtNum(r.cached as number)} | ${fmtNum(r.cache_writes as number)} | ${fmtNum(r.fresh as number)} | ${r.hit_pct ?? "—"}% | ${savings} |`);
   }
   console.log();
 }
