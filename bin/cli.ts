@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 // octm — opencode-telemetry CLI
 // Usage: octm <command> [subcommand] [args] [--flags]
+import path from "path";
 import { parseArgs } from "../src/cli/args.ts";
 import { runReport } from "../src/cli/report-cmd.ts";
 import { runInspect } from "../src/cli/inspect-cmd.ts";
@@ -8,6 +9,10 @@ import { runConfig } from "../src/cli/config-cmd.ts";
 import { runCache } from "../src/cli/cache-cmd.ts";
 import { runSql } from "../src/cli/sql-cmd.ts";
 import { runHealth } from "../src/cli/health-cmd.ts";
+
+// import.meta.dir is always the directory of bin/cli.ts (source) or bin/cli.js (bundled).
+// Both resolve correctly to <package-root>/bin/, so ../scripts/ always reaches scripts/.
+const scriptsDir = path.resolve(import.meta.dir, "../scripts");
 
 const parsed = parseArgs(process.argv.slice(2));
 
@@ -26,10 +31,10 @@ Commands:
 
 switch (parsed.command) {
   case "report":
-    runReport(parsed);
+    runReport(parsed, scriptsDir);
     break;
   case "inspect":
-    await runInspect(parsed);
+    await runInspect(parsed, scriptsDir);
     break;
   case "health":
     runHealth();

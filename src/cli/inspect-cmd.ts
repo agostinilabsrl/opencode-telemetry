@@ -6,7 +6,7 @@ import { saveReport } from "./output.ts";
 import type { ParsedArgs } from "./args.ts";
 import { flagBool } from "./args.ts";
 
-export async function runInspect(parsed: ParsedArgs): Promise<void> {
+export async function runInspect(parsed: ParsedArgs, scriptsDir: string): Promise<void> {
   const sessionId = parsed.subcommand ?? parsed.positionals[0];
   if (!sessionId) {
     console.error("Usage: octm inspect <session_id> [--content] [--save] [--no-save]");
@@ -16,8 +16,7 @@ export async function runInspect(parsed: ParsedArgs): Promise<void> {
   const withContent = flagBool(parsed.flags, "content", false);
   const save = !flagBool(parsed.flags, "no-save", false);
 
-  // src/cli/ → ../../scripts/
-  const scriptPath = path.resolve(import.meta.dir, "../../scripts/inspect.ts");
+  const scriptPath = path.join(scriptsDir, "inspect.ts");
   if (!fs.existsSync(scriptPath)) {
     console.error(`Cannot find inspect script at: ${scriptPath}`);
     console.error("The plugin installation may be broken. Try: npm install opencode-telemetry@latest");

@@ -6,13 +6,12 @@ import { saveReport } from "./output.ts";
 import type { ParsedArgs } from "./args.ts";
 import { flagBool, flagInt } from "./args.ts";
 
-export function runReport(parsed: ParsedArgs): void {
+export function runReport(parsed: ParsedArgs, scriptsDir: string): void {
   const days = flagInt(parsed.flags, "days", 7);
   const save = !flagBool(parsed.flags, "no-save", false);
   const format = parsed.flags.get("format") ?? "md";
 
-  // src/cli/ → ../../scripts/
-  const scriptPath = path.resolve(import.meta.dir, "../../scripts/report.ts");
+  const scriptPath = path.join(scriptsDir, "report.ts");
   if (!fs.existsSync(scriptPath)) {
     console.error(`Cannot find report script at: ${scriptPath}`);
     console.error("The plugin installation may be broken. Try: npm install opencode-telemetry@latest");
@@ -39,7 +38,6 @@ export function runReport(parsed: ParsedArgs): void {
   if (result.stderr) process.stderr.write(result.stderr);
 
   if (format === "json") {
-    // Minimal JSON wrapper around the markdown
     console.log(JSON.stringify({ report: output, generated_at: new Date().toISOString() }));
     return;
   }
