@@ -5,6 +5,7 @@ import { estimateCost } from "./pricing.ts";
 
 type PendingToolCall = {
   session_id: string;
+  turn_idx: number;
   tool_name: string;
   skill_name: string | null;
   tool_call_id: string | null;
@@ -23,6 +24,14 @@ export function createHandlers(db: DbHandle, ctx: PluginInput) {
   const pendingToolCalls = new Map<string, PendingToolCall>();
   // Capture server URL once (from ctx.serverUrl if available)
   const serverUrl: string | null = ctx.serverUrl ? String(ctx.serverUrl) : null;
+
+  function peekCurrentTurnIdx(sessionId: string): number {
+    if (!sessionTurnCounters.has(sessionId)) {
+      const max = db.getMaxTurnIdx(sessionId);
+      sessionTurnCounters.set(sessionId, max + 1);
+    }
+    return sessionTurnCounters.get(sessionId)!;
+  }
 
   function getNextTurnIdx(sessionId: string): number {
     if (!sessionTurnCounters.has(sessionId)) {
@@ -136,6 +145,7 @@ export function createHandlers(db: DbHandle, ctx: PluginInput) {
 
       pendingToolCalls.set(input.callID, {
         session_id: input.sessionID,
+        turn_idx: peekCurrentTurnIdx(input.sessionID),
         tool_name: input.tool,
         skill_name: skillName,
         tool_call_id: input.callID ?? null,
@@ -164,7 +174,7 @@ export function createHandlers(db: DbHandle, ctx: PluginInput) {
 
       db.insertToolCall({
         session_id: input.sessionID,
-        turn_idx: null, // turn correlation not available at tool-call time (see NOTES.md)
+        turn_idx: pending?.turn_idx ?? null,
         tool_name: input.tool,
         skill_name:
           pending?.skill_name ??

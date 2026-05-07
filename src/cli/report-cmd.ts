@@ -11,7 +11,7 @@ export function runReport(parsed: ParsedArgs): void {
   const format = parsed.flags.get("format") ?? "md";
 
   // Locate the report script relative to this file's position in the package
-  const scriptPath = path.resolve(import.meta.dir, "../../scripts/report.ts");
+  const scriptPath = path.resolve(import.meta.dir, "../scripts/report.ts");
 
   const result = spawnSync("bun", ["run", scriptPath, "--days", String(days)], {
     encoding: "utf8",

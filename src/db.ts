@@ -151,7 +151,7 @@ export function initDatabase(): DbHandle {
       total_cached_read   = total_cached_read + $cached_read,
       total_cached_write  = total_cached_write + $cached_write,
       total_reasoning     = total_reasoning + $reasoning,
-      est_cost_usd        = COALESCE(est_cost_usd, 0) + COALESCE($cost, 0)
+      est_cost_usd        = CASE WHEN $cost IS NOT NULL THEN COALESCE(est_cost_usd, 0) + $cost ELSE est_cost_usd END
     WHERE session_id = $session_id
   `);
 
@@ -189,6 +189,15 @@ export function initDatabase(): DbHandle {
     UPDATE sessions SET
       primary_agent = $agent,
       slash_command = '/' || $agent
+    WHERE session_id = $session_id AND primary_agent IS NULL
+  `);
+
+  const stmtRollupPrimaryAgent = db.prepare(`
+    UPDATE sessions SET primary_agent = (
+      SELECT agent FROM turns
+      WHERE session_id = $session_id AND agent IS NOT NULL
+      GROUP BY agent ORDER BY COUNT(*) DESC LIMIT 1
+    )
     WHERE session_id = $session_id AND primary_agent IS NULL
   `);
 
@@ -290,6 +299,7 @@ export function initDatabase(): DbHandle {
     finalizeSession(session_id) {
       try {
         stmtFinalizeSessionSimple.run({ $session_id: session_id });
+        stmtRollupPrimaryAgent.run({ $session_id: session_id });
       } catch (err) {
         console.warn("[opencode-telemetry] finalizeSession failed:", err);
       }
