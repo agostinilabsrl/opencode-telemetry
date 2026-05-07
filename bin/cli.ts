@@ -7,6 +7,7 @@ import { runInspect } from "../src/cli/inspect-cmd.ts";
 import { runConfig } from "../src/cli/config-cmd.ts";
 import { runCache } from "../src/cli/cache-cmd.ts";
 import { runSql } from "../src/cli/sql-cmd.ts";
+import { runHealth } from "../src/cli/health-cmd.ts";
 
 const parsed = parseArgs(process.argv.slice(2));
 
@@ -16,6 +17,7 @@ octm — opencode-telemetry CLI
 Commands:
   octm report [--days N] [--save] [--no-save] [--format md|json]
   octm inspect <session_id> [--content] [--save] [--no-save]
+  octm health
   octm config show|get <key>|set <key> <value>|reset
   octm cache stats|clear [--older-than 30d]|prefetch <session_id>
   octm sql "<query>" | --file <path>
@@ -28,6 +30,9 @@ switch (parsed.command) {
     break;
   case "inspect":
     await runInspect(parsed);
+    break;
+  case "health":
+    runHealth();
     break;
   case "config":
     runConfig(parsed);

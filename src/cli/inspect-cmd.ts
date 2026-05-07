@@ -1,6 +1,7 @@
 // inspect subcommand: delegates to scripts/inspect.ts, optionally saves output.
 import { spawnSync } from "child_process";
 import path from "path";
+import fs from "fs";
 import { saveReport } from "./output.ts";
 import type { ParsedArgs } from "./args.ts";
 import { flagBool } from "./args.ts";
@@ -15,7 +16,13 @@ export async function runInspect(parsed: ParsedArgs): Promise<void> {
   const withContent = flagBool(parsed.flags, "content", false);
   const save = !flagBool(parsed.flags, "no-save", false);
 
-  const scriptPath = path.resolve(import.meta.dir, "../scripts/inspect.ts");
+  // src/cli/ → ../../scripts/
+  const scriptPath = path.resolve(import.meta.dir, "../../scripts/inspect.ts");
+  if (!fs.existsSync(scriptPath)) {
+    console.error(`Cannot find inspect script at: ${scriptPath}`);
+    console.error("The plugin installation may be broken. Try: npm install opencode-telemetry@latest");
+    process.exit(64);
+  }
 
   const args = [sessionId];
   if (withContent) args.push("--content");
@@ -26,8 +33,14 @@ export async function runInspect(parsed: ParsedArgs): Promise<void> {
   });
 
   if (result.error) {
-    console.error("Failed to run inspect script:", result.error.message);
+    console.error(`Failed to run inspect script: ${result.error.message}`);
+    console.error("Ensure Bun is installed and in PATH: https://bun.sh");
     process.exit(1);
+  }
+  if (result.status !== 0) {
+    if (result.stderr) process.stderr.write(result.stderr);
+    console.error(`Inspect script exited with code ${result.status}. Expected script: ${scriptPath}`);
+    process.exit(result.status ?? 1);
   }
 
   const output = result.stdout;

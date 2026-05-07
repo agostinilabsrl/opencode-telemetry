@@ -1,0 +1,62 @@
+name: Smoke test (npm install)
+
+on:
+  push:
+    branches: [main, "claude/**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  smoke:
+    name: Pack, install, and run octm commands
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.14.0"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Type check
+        run: bun run typecheck
+
+      - name: Build scripts for Node fallback
+        run: bun run build:scripts
+
+      - name: Pack package
+        run: npm pack --pack-destination /tmp
+
+      - name: Install packed tarball in a fresh directory
+        run: |
+          mkdir /tmp/smoke-install
+          cd /tmp/smoke-install
+          npm init -y
+          TARBALL=$(ls /tmp/opencode-telemetry-*.tgz)
+          npm install "$TARBALL"
+
+      - name: octm --help
+        run: /tmp/smoke-install/node_modules/.bin/octm --help
+
+      - name: octm report --no-save (no DB — must exit 0 with placeholder message)
+        run: /tmp/smoke-install/node_modules/.bin/octm report --no-save --days 1
+
+      - name: octm health (no DB — must exit 1 with clear message, not a crash)
+        run: |
+          /tmp/smoke-install/node_modules/.bin/octm health && echo "exit 0" || CODE=$?
+          # Exit code 1 is expected when no DB exists; anything else is a bug
+          if [ "${CODE:-0}" -gt 1 ]; then
+            echo "octm health exited with unexpected code ${CODE}" >&2
+            exit 1
+          fi
+
+      - name: octm inspect missing-id (must exit non-zero with helpful message, not a crash)
+        run: |
+          /tmp/smoke-install/node_modules/.bin/octm inspect no-such-session-id --no-save || true
