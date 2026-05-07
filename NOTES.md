@@ -136,13 +136,19 @@ Args are in `output.args` (mutable, so plugins could modify them), not on `input
 
 ---
 
-## 11. `turn_idx` cannot be correlated with tool calls at call time
+## 11. `turn_idx` correlation: primary path + post-hoc fallback
 
 **Spec assumed**: tool calls could be linked to their originating turn.
 
-**Actual**: Tool `before`/`after` events fire concurrently with (or before) the `message.updated` event that records the turn. There is no shared turn ID in the tool payloads.
+**Actual**: Tool `before`/`after` events fire before (or concurrently with) the `message.updated` event that records the turn. There is no shared turn ID in the tool payloads.
 
-**Implementation**: `tool_calls.turn_idx` is stored as `NULL`. Approximate correlation can be done post-hoc via timestamp proximity (`tool_calls.created_at` vs `turns.created_at`).
+**Implementation (two-tier)**:
+
+1. **Primary** — `onToolBefore` stores the pending call in `pendingToolCalls` keyed by `callID`, capturing `turn_idx = peekCurrentTurnIdx(sessionID)` at that moment. `onToolAfter` looks up the pending entry by `callID` and writes `pending.turn_idx`. This covers the normal case where `callID` matches.
+
+2. **Post-hoc fallback** — After `insertTurn` in `onMessageUpdated`, `db.linkOrphanToolCalls(sessionID, turn_idx, window_start, window_end)` issues an `UPDATE tool_calls SET turn_idx = ? WHERE turn_idx IS NULL AND created_at BETWEEN ? AND ?`. The window is `[msg.time.created, msg.time.completed + 100ms]`. This fixes any rows left with `NULL` due to `callID` mismatches or other edge cases.
+
+**Residual gap**: tool calls that fired after `msg.time.completed` (e.g. a slow `onToolAfter` race) will remain unlinked. Empirically unlikely; documented as acceptable.
 
 ---
 

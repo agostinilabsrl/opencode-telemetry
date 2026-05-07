@@ -95,6 +95,9 @@ export function createHandlers(db: DbHandle, ctx: PluginInput) {
           cacheWrite: msg.tokens.cache.write,
         });
 
+        const turnCreatedAt = new Date(msg.time.created).toISOString();
+        const turnCompletedAt = new Date(msg.time.completed + 100).toISOString();
+
         db.insertTurn({
           session_id: msg.sessionID,
           turn_idx,
@@ -111,8 +114,12 @@ export function createHandlers(db: DbHandle, ctx: PluginInput) {
           reasoning_tokens: msg.tokens.reasoning > 0 ? msg.tokens.reasoning : null,
           latency_ms: Math.round(msg.time.completed - msg.time.created),
           finish_reason: msg.finish ?? null,
-          created_at: new Date(msg.time.created).toISOString(),
+          created_at: turnCreatedAt,
         });
+
+        // Fix any tool calls that fired in this turn's time window but whose callID
+        // was not matched in pendingToolCalls (e.g. due to callID mismatch edge cases).
+        db.linkOrphanToolCalls(msg.sessionID, turn_idx, turnCreatedAt, turnCompletedAt);
 
         db.incrementSessionTurns(
           msg.sessionID,

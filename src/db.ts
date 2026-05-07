@@ -79,9 +79,49 @@ CREATE TABLE IF NOT EXISTS _meta (
   value TEXT NOT NULL
 );
 
-INSERT OR IGNORE INTO _meta (key, value) VALUES ('schema_version', '1');
+INSERT OR IGNORE INTO _meta (key, value) VALUES ('schema_version', '2');
 INSERT OR IGNORE INTO _meta (key, value) VALUES ('created_at', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
 `;
+
+interface Migration {
+  version: number;
+  up(db: Database): void;
+}
+
+// Each entry runs inside a transaction. ALTER TABLE errors are swallowed because
+// the base SCHEMA already includes these columns for fresh installs.
+const MIGRATIONS: Migration[] = [
+  {
+    version: 2,
+    up(db) {
+      try { db.exec("ALTER TABLE sessions ADD COLUMN slash_command TEXT"); } catch { /* already exists */ }
+      try { db.exec("ALTER TABLE turns ADD COLUMN parent_tool_call_id TEXT"); } catch { /* already exists */ }
+      try { db.exec("ALTER TABLE tool_calls ADD COLUMN tool_call_id TEXT"); } catch { /* already exists */ }
+      try { db.exec("ALTER TABLE tool_calls ADD COLUMN spawned_session_id TEXT"); } catch { /* already exists */ }
+      try { db.exec("ALTER TABLE sessions ADD COLUMN server_url TEXT"); } catch { /* already exists */ }
+      try { db.exec("CREATE INDEX IF NOT EXISTS idx_turns_parent_tool ON turns(parent_tool_call_id) WHERE parent_tool_call_id IS NOT NULL"); } catch { /* ignore */ }
+      try { db.exec("CREATE INDEX IF NOT EXISTS idx_tool_calls_tool_id ON tool_calls(tool_call_id) WHERE tool_call_id IS NOT NULL"); } catch { /* ignore */ }
+      try { db.exec("CREATE INDEX IF NOT EXISTS idx_tool_calls_spawned ON tool_calls(spawned_session_id) WHERE spawned_session_id IS NOT NULL"); } catch { /* ignore */ }
+    },
+  },
+];
+
+function runMigrations(db: Database): void {
+  const row = db.query("SELECT value FROM _meta WHERE key = 'schema_version'").get() as { value: string } | null;
+  const currentVersion = row ? parseInt(row.value, 10) : 1;
+  const pending = MIGRATIONS.filter(m => m.version > currentVersion);
+  for (const migration of pending) {
+    try {
+      db.transaction(() => {
+        migration.up(db);
+        db.prepare("INSERT OR REPLACE INTO _meta (key, value) VALUES (?, ?)").run("schema_version", String(migration.version));
+      })();
+    } catch (err) {
+      console.warn(`[opencode-telemetry] migration to v${migration.version} failed, stopping:`, err);
+      break;
+    }
+  }
+}
 
 export interface DbHandle {
   insertTurn(row: TurnRow): void;
@@ -99,7 +139,9 @@ export interface DbHandle {
   insertToolCall(row: ToolCallRow): void;
   incrementSessionToolCalls(session_id: string): void;
   finalizeSession(session_id: string): void;
+  linkOrphanToolCalls(session_id: string, turn_idx: number, window_start: string, window_end: string): void;
   getMaxTurnIdx(session_id: string): number;
+  schemaVersion(): number;
   getServerUrl(): string | null;
   close(): void;
 }
@@ -113,18 +155,7 @@ export function initDatabase(): DbHandle {
   db.exec("PRAGMA synchronous=NORMAL");
   db.exec("PRAGMA foreign_keys=ON");
   db.exec(SCHEMA);
-
-  // Migrations: add columns that may not exist in older databases (errors are swallowed)
-  try { db.exec("ALTER TABLE sessions ADD COLUMN slash_command TEXT"); } catch { /* already exists */ }
-  // v0.2 migration
-  try { db.exec("ALTER TABLE turns ADD COLUMN parent_tool_call_id TEXT"); } catch { /* already exists */ }
-  try { db.exec("ALTER TABLE tool_calls ADD COLUMN tool_call_id TEXT"); } catch { /* already exists */ }
-  try { db.exec("ALTER TABLE tool_calls ADD COLUMN spawned_session_id TEXT"); } catch { /* already exists */ }
-  try { db.exec("ALTER TABLE sessions ADD COLUMN server_url TEXT"); } catch { /* already exists */ }
-  try { db.exec("CREATE INDEX IF NOT EXISTS idx_turns_parent_tool ON turns(parent_tool_call_id) WHERE parent_tool_call_id IS NOT NULL"); } catch { /* ignore */ }
-  try { db.exec("CREATE INDEX IF NOT EXISTS idx_tool_calls_tool_id ON tool_calls(tool_call_id) WHERE tool_call_id IS NOT NULL"); } catch { /* ignore */ }
-  try { db.exec("CREATE INDEX IF NOT EXISTS idx_tool_calls_spawned ON tool_calls(spawned_session_id) WHERE spawned_session_id IS NOT NULL"); } catch { /* ignore */ }
-  try { db.exec("INSERT OR REPLACE INTO _meta (key, value) VALUES ('schema_version', '2')"); } catch { /* ignore */ }
+  runMigrations(db);
 
   const stmtUpsertSession = db.prepare(`
     INSERT INTO sessions (session_id, parent_session_id, started_at, primary_agent, project_path, worktree_path, server_url)
@@ -183,6 +214,15 @@ export function initDatabase(): DbHandle {
 
   const stmtGetMaxTurnIdx = db.prepare(`
     SELECT COALESCE(MAX(turn_idx), -1) AS max_idx FROM turns WHERE session_id = $session_id
+  `);
+
+  const stmtLinkOrphanToolCalls = db.prepare(`
+    UPDATE tool_calls
+    SET turn_idx = $turn_idx
+    WHERE session_id = $session_id
+      AND turn_idx IS NULL
+      AND created_at >= $window_start
+      AND created_at <= $window_end
   `);
 
   const stmtUpdatePrimaryAgent = db.prepare(`
@@ -311,6 +351,28 @@ export function initDatabase(): DbHandle {
         return row?.max_idx ?? -1;
       } catch {
         return -1;
+      }
+    },
+
+    linkOrphanToolCalls(session_id, turn_idx, window_start, window_end) {
+      try {
+        stmtLinkOrphanToolCalls.run({
+          $session_id: session_id,
+          $turn_idx: turn_idx,
+          $window_start: window_start,
+          $window_end: window_end,
+        });
+      } catch (err) {
+        console.warn("[opencode-telemetry] linkOrphanToolCalls failed:", err);
+      }
+    },
+
+    schemaVersion() {
+      try {
+        const row = db.query("SELECT value FROM _meta WHERE key = 'schema_version'").get() as { value: string } | null;
+        return row ? parseInt(row.value, 10) : 1;
+      } catch {
+        return 1;
       }
     },
 
