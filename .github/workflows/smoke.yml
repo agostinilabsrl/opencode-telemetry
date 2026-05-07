@@ -28,8 +28,8 @@ jobs:
       - name: Type check
         run: bun run typecheck
 
-      - name: Build scripts for Node fallback
-        run: bun run build:scripts
+      - name: Build (cli + scripts) — produces bin/cli.js required by npm bin field
+        run: bun run build
 
       - name: Pack package
         run: npm pack --pack-destination /tmp
