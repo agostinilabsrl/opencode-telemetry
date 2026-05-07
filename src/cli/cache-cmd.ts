@@ -58,8 +58,7 @@ export async function runCache(parsed: ParsedArgs): Promise<void> {
     ).all({}) as { server_url: string }[];
     db.close();
 
-    const serverUrl = rows[0]?.server_url;
-    if (!serverUrl) { console.error("No server URL found in DB. Run a session first."); process.exit(1); }
+    const serverUrl = rows[0]?.server_url ?? null;
 
     console.log(`Prefetching messages for session ${sessionId}...`);
     const msgs = await fetchSessionMessages(sessionId, serverUrl);

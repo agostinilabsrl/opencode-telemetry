@@ -14,6 +14,12 @@ import { ContentCache } from "./content-cache.ts";
 import { effectiveConfig, loadConfig } from "./config.ts";
 
 const FETCH_TIMEOUT_MS = 5_000;
+const DEFAULT_SERVER_URL = "http://localhost:4096";
+
+export function resolveServerUrl(serverUrl?: string | null): string {
+  if (serverUrl?.trim()) return serverUrl;
+  return process.env.OPENCODE_SERVER_URL?.trim() || DEFAULT_SERVER_URL;
+}
 
 export interface MessageContent {
   role: "system" | "user" | "assistant" | "tool";
@@ -36,14 +42,14 @@ function makeCache(): ContentCache {
   return new ContentCache(cfg.content_cache.path, cfg.content_cache.enabled);
 }
 
-function makeClient(serverUrl: string) {
-  return createOpencodeClient({ baseUrl: serverUrl });
+function makeClient(serverUrl?: string | null) {
+  return createOpencodeClient({ baseUrl: resolveServerUrl(serverUrl) });
 }
 
 // Fetch all messages for a session. Results are cached on success.
 export async function fetchSessionMessages(
   sessionId: string,
-  serverUrl: string
+  serverUrl?: string | null
 ): Promise<MessageContent[]> {
   const cache = makeCache();
   const cacheKey = "_session_messages";
@@ -81,7 +87,7 @@ export async function fetchSessionMessages(
 export async function fetchSessionMessagesBatched(
   messageIds: string[],
   sessionId: string,
-  serverUrl: string,
+  serverUrl?: string | null,
   batchSize = 10
 ): Promise<Map<string, MessageContent>> {
   const result = new Map<string, MessageContent>();

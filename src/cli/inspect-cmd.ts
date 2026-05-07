@@ -15,7 +15,7 @@ export async function runInspect(parsed: ParsedArgs): Promise<void> {
   const withContent = flagBool(parsed.flags, "content", false);
   const save = !flagBool(parsed.flags, "no-save", false);
 
-  const scriptPath = path.resolve(import.meta.dir, "../../scripts/inspect.ts");
+  const scriptPath = path.resolve(import.meta.dir, "../scripts/inspect.ts");
 
   const args = [sessionId];
   if (withContent) args.push("--content");
