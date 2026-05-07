@@ -42,7 +42,7 @@
     "build:scripts": "bun build scripts/report.ts scripts/inspect.ts --target=node --external bun:sqlite --outdir=scripts",
     "build:cli": "bun build bin/cli.ts --target=node --external bun:sqlite --outfile=bin/cli.js",
     "build": "bun run build:scripts && bun run build:cli",
-    "prepublishOnly": "bun run build"
+    "prepack": "bun run build"
   },
   "peerDependencies": {
     "@opencode-ai/plugin": "*"

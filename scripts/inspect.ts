@@ -322,6 +322,46 @@ if (totalCost == null) {
   console.log();
 }
 
+// ── Cache efficiency ────────────────────────────────────────────────────────────────────────────────────
+
+import pricingData from "../src/pricing.json" with { type: "json" };
+type PricingEntry = { input_per_mtok: number; output_per_mtok: number; cache_read_per_mtok: number; cache_write_per_mtok: number };
+const pricing = pricingData as Record<string, PricingEntry | string>;
+
+console.log(`## Cache Efficiency\n`);
+const cacheRows = q(`
+  SELECT
+    COALESCE(provider_id, '—') AS provider,
+    COALESCE(model, '—') AS model,
+    SUM(COALESCE(cached_read_tokens, 0)) AS cache_read,
+    SUM(COALESCE(cached_write_tokens, 0)) AS cache_write,
+    SUM(COALESCE(input_tokens, 0)) AS fresh_input,
+    ROUND(100.0 * SUM(COALESCE(cached_read_tokens, 0)) /
+      NULLIF(SUM(COALESCE(cached_read_tokens, 0) + COALESCE(input_tokens, 0)), 0), 1) AS hit_pct
+  FROM turns
+  WHERE session_id = $id
+  GROUP BY provider_id, model
+  ORDER BY hit_pct DESC
+`, { $id: resolvedId }) as Record<string, unknown>[];
+
+if (cacheRows.length === 0) {
+  console.log("_No cache data for this session._\n");
+} else {
+  console.log("| Provider | Model | Cache Reads | Cache Writes | Fresh Input | Hit % | Savings vs No-Cache |");
+  console.log("|----------|-------|-------------|--------------|-------------|-------|---------------------|");
+  for (const r of cacheRows) {
+    const key = `${r.provider}/${r.model}`;
+    const entry = pricing[key];
+    let savings = "N/A";
+    if (entry && typeof entry !== "string") {
+      const saved = ((r.cache_read as number) * (entry.input_per_mtok - entry.cache_read_per_mtok)) / 1_000_000;
+      savings = `$${saved.toFixed(5)}`;
+    }
+    console.log(`| ${r.provider} | ${r.model} | ${fmtNum(r.cache_read as number)} | ${fmtNum(r.cache_write as number)} | ${fmtNum(r.fresh_input as number)} | ${r.hit_pct ?? "—"}% | ${savings} |`);
+  }
+  console.log();
+}
+
 db.close();
 
 // ── Disclaimer ────────────────────────────────────────────────────────────────────────────────────────
