@@ -79,7 +79,7 @@ CREATE TABLE IF NOT EXISTS _meta (
   value TEXT NOT NULL
 );
 
-INSERT OR IGNORE INTO _meta (key, value) VALUES ('schema_version', '2');
+INSERT OR IGNORE INTO _meta (key, value) VALUES ('schema_version', '3');
 INSERT OR IGNORE INTO _meta (key, value) VALUES ('created_at', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
 `;
 
@@ -88,8 +88,8 @@ interface Migration {
   up(db: Database): void;
 }
 
-// Each entry runs inside a transaction. ALTER TABLE errors are swallowed because
-// the base SCHEMA already includes these columns for fresh installs.
+// Each entry runs inside a transaction. Use PRAGMA table_info to check column
+// existence before ALTER TABLE — never swallow errors with bare try/catch.
 const MIGRATIONS: Migration[] = [
   {
     version: 2,
@@ -102,6 +102,38 @@ const MIGRATIONS: Migration[] = [
       try { db.exec("CREATE INDEX IF NOT EXISTS idx_turns_parent_tool ON turns(parent_tool_call_id) WHERE parent_tool_call_id IS NOT NULL"); } catch { /* ignore */ }
       try { db.exec("CREATE INDEX IF NOT EXISTS idx_tool_calls_tool_id ON tool_calls(tool_call_id) WHERE tool_call_id IS NOT NULL"); } catch { /* ignore */ }
       try { db.exec("CREATE INDEX IF NOT EXISTS idx_tool_calls_spawned ON tool_calls(spawned_session_id) WHERE spawned_session_id IS NOT NULL"); } catch { /* ignore */ }
+    },
+  },
+  {
+    version: 3,
+    up(db) {
+      // Use PRAGMA table_info to guard ALTER TABLE — avoids silent failures from
+      // v2 try/catch that could have bumped schema_version without adding the column.
+      const sessionCols = db.query("PRAGMA table_info(sessions)").all() as { name: string }[];
+      const colNames = new Set(sessionCols.map(c => c.name));
+      if (!colNames.has("slash_command")) {
+        db.exec("ALTER TABLE sessions ADD COLUMN slash_command TEXT");
+        db.exec("CREATE INDEX IF NOT EXISTS idx_sessions_slash_command ON sessions(slash_command) WHERE slash_command IS NOT NULL");
+      }
+      // Backfill primary_agent from turns for sessions still showing NULL.
+      db.exec(`
+        UPDATE sessions
+        SET primary_agent = (
+          SELECT agent FROM turns
+          WHERE session_id = sessions.session_id AND agent IS NOT NULL
+          GROUP BY agent ORDER BY COUNT(*) DESC LIMIT 1
+        )
+        WHERE primary_agent IS NULL
+          AND EXISTS (
+            SELECT 1 FROM turns WHERE session_id = sessions.session_id AND agent IS NOT NULL
+          )
+      `);
+      // Derive slash_command from primary_agent for all sessions that still lack it.
+      db.exec(`
+        UPDATE sessions
+        SET slash_command = '/' || primary_agent
+        WHERE primary_agent IS NOT NULL AND (slash_command IS NULL OR slash_command = '')
+      `);
     },
   },
 ];
@@ -241,6 +273,14 @@ export function initDatabase(): DbHandle {
     WHERE session_id = $session_id AND primary_agent IS NULL
   `);
 
+  const stmtDeriveSlashCommand = db.prepare(`
+    UPDATE sessions
+    SET slash_command = '/' || primary_agent
+    WHERE session_id = $session_id
+      AND primary_agent IS NOT NULL
+      AND (slash_command IS NULL OR slash_command = '')
+  `);
+
   return {
     upsertSession(fields) {
       try {
@@ -340,6 +380,7 @@ export function initDatabase(): DbHandle {
       try {
         stmtFinalizeSessionSimple.run({ $session_id: session_id });
         stmtRollupPrimaryAgent.run({ $session_id: session_id });
+        stmtDeriveSlashCommand.run({ $session_id: session_id });
       } catch (err) {
         console.warn("[opencode-telemetry] finalizeSession failed:", err);
       }

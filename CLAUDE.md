@@ -69,6 +69,16 @@ Before implementing handlers, the spec mandates a **diagnostic pass**: run a min
 
 `src/pricing.json` is a static snapshot. `est_cost_usd` per turn = `(input * input_rate + output * output_rate + cache_read * cache_read_rate + cache_write * cache_write_rate) / 1_000_000`. If model not found, return `null`. Session total is summed on `session.idle`.
 
+## Schema Migration Convention
+
+When adding a column or changing the schema:
+
+1. Add a new entry to `MIGRATIONS[]` in `src/db.ts` with `version = <current_max + 1>`
+2. In `up(db)`, use `PRAGMA table_info(<table>)` to check column existence **before** ALTER TABLE — never use bare `try/catch` around ALTER (silently swallowed errors can bump schema_version while leaving the column missing, which is unrecoverable)
+3. Update `INSERT OR IGNORE INTO _meta VALUES ('schema_version', '<new_version>')` in the SCHEMA constant so fresh installs start at the new version
+4. Include backfill queries if existing rows need to be populated
+5. `runMigrations` runs on every plugin load, inside a transaction per migration — a real error stops the loop and logs a warning
+
 ## Development Branch
 
 All changes go to branch `claude/implement-specs-notes-VhWmW`.
