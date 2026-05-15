@@ -261,8 +261,8 @@ const toolStats = q(`
                       ELSE CAST(cnt * 0.95 AS INTEGER) END
   )
   SELECT a.tool_name, a.calls, a.avg_bytes, a.max_bytes,
-    p50.p50_bytes,
-    p95.p95_bytes
+    COALESCE(p50.p50_bytes, a.avg_bytes) AS p50_bytes,
+    COALESCE(p95.p95_bytes, a.avg_bytes) AS p95_bytes
   FROM agg a
   LEFT JOIN p50 ON p50.tool_name = a.tool_name
   LEFT JOIN p95 ON p95.tool_name = a.tool_name

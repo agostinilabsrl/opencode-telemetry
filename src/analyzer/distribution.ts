@@ -5,6 +5,8 @@ export interface ContextDistribution {
   conversation_history: number;
   tool_outputs: number;
   user_message: number;
+  // "turns" is generic: callers may pass individual turns or whole sessions as
+  // the unit; covered_turns / total_turns counts whatever unit was passed in.
   covered_turns: number;
   total_turns: number;
   coverage_pct: number;         // % of token weight that has composition data
