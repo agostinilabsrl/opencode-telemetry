@@ -1,15 +1,22 @@
 ---
-description: Generate and save a 7-day telemetry report. Returns the saved file path.
+description: Generate and save a telemetry report (default last 7 days; pass --days N for a custom window). Returns the saved file path.
 ---
 
 You are running the telemetry-report command.
 
-Find the `octm` CLI and run it with `--save`, which writes the report to disk and returns the path:
+Find the `octm` CLI and run it with `--save`, which writes the report to disk and returns the path.
+
+Options (pass through as-is to `octm report`):
+- `--days N` — change the time window (e.g. `--days 1` for today, `--days 30` for a month; default 7)
+- `--content` — include Token Distribution section (requires content cached via `octm inspect <id> --content`)
+
+Use the days value and content flag the user requested, substituting into the command below:
 
 ```bash
-octm report --save 2>&1 \
-  || bun run "$(bun pm ls -g 2>/dev/null | grep opencode-telemetry | awk '{print $1}')/bin/cli.ts" report --save 2>&1 \
-  || bun run ~/.config/opencode/plugin/opencode-telemetry/bin/cli.ts report --save 2>&1 \
+DAYS=7  # replace with user-requested value; add --content if requested
+octm report --save --days $DAYS 2>&1 \
+  || bun run "$(bun pm ls -g 2>/dev/null | grep opencode-telemetry | awk '{print $1}')/bin/cli.ts" report --save --days $DAYS 2>&1 \
+  || bun run ~/.config/opencode/plugin/opencode-telemetry/bin/cli.ts report --save --days $DAYS 2>&1 \
   || echo "ERROR: could not locate octm. Make sure bun is in PATH and opencode-telemetry is installed."
 ```
 

@@ -4,6 +4,10 @@
 import { openDatabase } from "./db-compat.ts";
 import { getDbPath } from "../src/paths.ts";
 import fs from "fs";
+import { fetchSessionMessages } from "../src/sdk-bridge.ts";
+import { analyzeComposition } from "../src/analyzer/composition.ts";
+import { weightedDistribution } from "../src/analyzer/distribution.ts";
+import type { MessageContent } from "../src/sdk-bridge.ts";
 
 const sessionId = process.argv[2];
 if (!sessionId) {
@@ -57,6 +61,13 @@ if (sessions.length === 0) {
 const s = sessions[0] as Record<string, unknown>;
 const resolvedId = s.session_id as string;
 
+// Look up the server URL recorded for this specific session (may differ from latest)
+const serverUrlRows = q(
+  "SELECT server_url FROM sessions WHERE session_id = $id AND server_url IS NOT NULL LIMIT 1",
+  { $id: resolvedId }
+) as { server_url: string }[];
+const serverUrl = serverUrlRows[0]?.server_url ?? process.env.OPENCODE_SERVER_URL ?? null;
+
 const slashCmd = (s.slash_command as string | null) ??
   (s.primary_agent ? `/${s.primary_agent}` : null);
 
@@ -100,6 +111,14 @@ if ((costRollup?.children_count as number) > 0) {
   console.log(`| Child Sessions | ${costRollup.children_count} |`);
 }
 console.log();
+
+// Without --content: cache-only (no network calls, instant).
+// With --content: try live server then cache.
+const withContent = process.argv.includes("--content");
+let sessionMessages: MessageContent[] = [];
+try {
+  sessionMessages = await fetchSessionMessages(resolvedId, serverUrl, /* cacheOnly */ !withContent);
+} catch { /* non-fatal */ }
 
 // ── Sub-sessions (agent hops) ─────────────────────────────────────────────────────────────────────────
 
@@ -154,6 +173,31 @@ if (agentChain.length === 0) {
   console.log();
 }
 
+// ── Token Distribution ──────────────────────────────────────────────────────────────────────────────────
+
+console.log(`## Token Distribution\n`);
+
+if (sessionMessages.length === 0) {
+  console.log(`_No content cached. Run \`octm inspect ${resolvedId} --content\` to fetch from the live opencode server._\n`);
+} else {
+  // Aggregate distribution for the whole session
+  const sessionContextTokens = ((s.total_input_tokens as number) ?? 0) + ((s.total_cached_read as number) ?? 0);
+  if (sessionContextTokens === 0) {
+    console.log(`_No token data for this session._\n`);
+  } else {
+    const comp = analyzeComposition(sessionMessages, sessionContextTokens);
+    const dist = weightedDistribution([{ composition: comp, total_input_tokens: sessionContextTokens }]);
+
+    console.log(`| Component | Share |`);
+    console.log(`|-----------|-------|`);
+    console.log(`| System / Tool Defs | ${dist.system_prompt}% |`);
+    console.log(`| Conversation History | ${dist.conversation_history}% |`);
+    console.log(`| Tool Results | ${dist.tool_outputs}% |`);
+    console.log(`| Current Turn Input | ${dist.user_message}% |`);
+    console.log();
+  }
+}
+
 // ── Token trajectory ──────────────────────────────────────────────────────────────────────────────────
 
 const turns = q(`
@@ -206,21 +250,71 @@ if (turns.length > 1) {
 
 // ── Per-turn metrics ──────────────────────────────────────────────────────────────────────────────────
 
+// Pre-compute per-turn compositions if messages available.
+// Assumes strict user/assistant alternation (user[0], asst[0], user[1], asst[1], …).
+// Sessions with tool-use loops or multi-part exchanges may have more messages per turn,
+// causing later turns to all map to the full message list — percentages will be identical
+// rather than wrong, which is the graceful degradation.
+const userAssistantMsgs = sessionMessages.filter(m => m.role === "user" || m.role === "assistant");
+const turnCompositions: Map<number, { sys: number; hist: number; tools: number; inp: number }> = new Map();
+
+if (userAssistantMsgs.length > 0) {
+  for (let i = 0; i < turns.length; i++) {
+    const turnIdx = turns[i].turn_idx as number;
+    // Context for turn i = messages[0..2i] (2i+1 messages: i user+assistant pairs + current user)
+    const sliceEnd = Math.min(2 * i + 1, userAssistantMsgs.length);
+    const slice = userAssistantMsgs.slice(0, sliceEnd);
+    if (slice.length === 0) continue;
+
+    const contextTokens = ((turns[i].input_tokens as number) ?? 0) + ((turns[i].cached_read_tokens as number) ?? 0);
+    const turnComp = analyzeComposition(slice, contextTokens);
+    const bp = turnComp.breakdown_pct;
+    const ctxSum = bp.system_prompt + bp.conversation_history + bp.tool_outputs + bp.user_message;
+    if (ctxSum === 0) continue;
+
+    turnCompositions.set(turnIdx, {
+      sys:   Math.round(bp.system_prompt        / ctxSum * 1000) / 10,
+      hist:  Math.round(bp.conversation_history  / ctxSum * 1000) / 10,
+      tools: Math.round(bp.tool_outputs          / ctxSum * 1000) / 10,
+      inp:   Math.round(bp.user_message          / ctxSum * 1000) / 10,
+    });
+  }
+}
+
+const hasComposition = turnCompositions.size > 0;
+
 console.log(`## Turns\n`);
 if (turns.length === 0) {
   console.log("_No turns recorded._\n");
 } else {
-  console.log("| # | Agent | Model | In | Out | Cached | Δ% | Reasoning | Latency | Finish |");
-  console.log("|---|-------|-------|-----|-----|--------|----|-----------|---------|--------|");
+  if (hasComposition) {
+    console.log("| # | Agent | Model | In | Out | Cached | Δ% | Reasoning | Latency | Finish | Sys% | Hist% | Tools% | In% |");
+    console.log("|---|-------|-------|-----|-----|--------|----|-----------|---------|--------|------|-------|--------|-----|");
+  } else {
+    console.log("| # | Agent | Model | In | Out | Cached | Δ% | Reasoning | Latency | Finish |");
+    console.log("|---|-------|-------|-----|-----|--------|----|-----------|---------|--------|");
+  }
   const contextValues2 = turns.map(t => ((t.input_tokens as number) ?? 0) + ((t.cached_read_tokens as number) ?? 0));
   for (let i = 0; i < turns.length; i++) {
     const t = turns[i];
     const prev = i > 0 ? contextValues2[i - 1] : null;
     const curr = contextValues2[i];
     const deltaPct = prev != null && prev > 0 ? `${((curr - prev) / prev * 100).toFixed(1)}%` : "—";
-    console.log(
-      `| ${t.turn_idx} | ${t.agent ?? "—"} | ${t.model ?? "—"} | ${fmtNum(t.input_tokens as number)} | ${fmtNum(t.output_tokens as number)} | ${fmtNum(t.cached_read_tokens as number)} | ${deltaPct} | ${fmtNum(t.reasoning_tokens as number)} | ${fmtMs(t.latency_ms as number)} | ${t.finish_reason ?? "—"} |`
-    );
+
+    if (hasComposition) {
+      const cp = turnCompositions.get(t.turn_idx as number);
+      const sys   = cp ? `${cp.sys}%`   : "—";
+      const hist  = cp ? `${cp.hist}%`  : "—";
+      const tools = cp ? `${cp.tools}%` : "—";
+      const inp   = cp ? `${cp.inp}%`   : "—";
+      console.log(
+        `| ${t.turn_idx} | ${t.agent ?? "—"} | ${t.model ?? "—"} | ${fmtNum(t.input_tokens as number)} | ${fmtNum(t.output_tokens as number)} | ${fmtNum(t.cached_read_tokens as number)} | ${deltaPct} | ${fmtNum(t.reasoning_tokens as number)} | ${fmtMs(t.latency_ms as number)} | ${t.finish_reason ?? "—"} | ${sys} | ${hist} | ${tools} | ${inp} |`
+      );
+    } else {
+      console.log(
+        `| ${t.turn_idx} | ${t.agent ?? "—"} | ${t.model ?? "—"} | ${fmtNum(t.input_tokens as number)} | ${fmtNum(t.output_tokens as number)} | ${fmtNum(t.cached_read_tokens as number)} | ${deltaPct} | ${fmtNum(t.reasoning_tokens as number)} | ${fmtMs(t.latency_ms as number)} | ${t.finish_reason ?? "—"} |`
+      );
+    }
   }
   console.log();
 }

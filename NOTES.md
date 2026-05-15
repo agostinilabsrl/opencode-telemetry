@@ -198,7 +198,19 @@ Per spec §5.2 preference: `bun:sqlite` (built-in, zero external dependency) was
 
 ---
 
-## 15. Subagent Attribution Verification Status (Phase 0 Investigation)
+## 15. Skill arg key — defensive multi-key extraction (#42)
+
+**Original assumption**: skill tool args always carry `{ name: "skill-id" }` — the `name` key.
+
+**Status**: The `name` key has not been observed to change in the wild, but the arg shape is not part of a stable public API contract. A regression was identified where a future opencode version could rename this field (e.g. to `skillName`, `id`, or `skill`), silently causing all skill tool calls to be stored with `skill_name = NULL`.
+
+**Fix**: `extractSkillName(args)` in `src/handlers.ts` tries keys in priority order: `name → skillName → id → skill`. This is used in both `onToolBefore` and `onToolAfter`. The first non-null string value is used. If none match, `NULL` is stored (same as before, but without silent data loss when the key changes).
+
+**Evidence of actual key change**: None observed as of 2026-05-15. This is a proactive defensive fix.
+
+---
+
+## 16. Subagent Attribution Verification Status (Phase 0 Investigation) [formerly §15]
 
 **Question**: Is `parent_session_id` correctly captured when a Conductor session dispatches ACT/REVIEW subagents? A $2.63 vs ~$10 billing discrepancy suggests child costs may be invisible.
 

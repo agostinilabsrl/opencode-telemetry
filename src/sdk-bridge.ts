@@ -49,13 +49,16 @@ function makeClient(serverUrl?: string | null) {
 // Fetch all messages for a session. Results are cached on success.
 export async function fetchSessionMessages(
   sessionId: string,
-  serverUrl?: string | null
+  serverUrl?: string | null,
+  cacheOnly = false
 ): Promise<MessageContent[]> {
   const cache = makeCache();
   const cacheKey = "_session_messages";
 
   const cached = await cache.get<MessageContent[]>(sessionId, cacheKey);
   if (cached) return cached;
+
+  if (cacheOnly) return [];
 
   try {
     const client = makeClient(serverUrl);

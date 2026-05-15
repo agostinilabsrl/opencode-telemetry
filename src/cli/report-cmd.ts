@@ -10,6 +10,7 @@ export function runReport(parsed: ParsedArgs, scriptsDir: string): void {
   const days = flagInt(parsed.flags, "days", 7);
   const save = !flagBool(parsed.flags, "no-save", false);
   const format = parsed.flags.get("format") ?? "md";
+  const withContent = flagBool(parsed.flags, "content", false);
 
   const scriptPath = path.join(scriptsDir, "report.ts");
   if (!fs.existsSync(scriptPath)) {
@@ -18,7 +19,10 @@ export function runReport(parsed: ParsedArgs, scriptsDir: string): void {
     process.exit(64);
   }
 
-  const result = spawnSync("bun", ["run", scriptPath, "--days", String(days)], {
+  const spawnArgs = ["run", scriptPath, "--days", String(days)];
+  if (withContent) spawnArgs.push("--content");
+
+  const result = spawnSync("bun", spawnArgs, {
     encoding: "utf8",
     env: { ...process.env, OCTM_DAYS: String(days) },
   });
