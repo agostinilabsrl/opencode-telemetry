@@ -10,3 +10,4 @@ bun.lockb
 scripts/report.js
 scripts/inspect.js
 bin/cli.js
+.claude/
