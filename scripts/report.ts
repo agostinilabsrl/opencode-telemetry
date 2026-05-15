@@ -1,8 +1,12 @@
 #!/usr/bin/env bun
-// Generates a markdown telemetry report for the last 7 days.
+// Generates a markdown telemetry report for the last N days (default 7).
 import { openDatabase } from "./db-compat.ts";
 import { getDbPath } from "../src/paths.ts";
 import fs from "fs";
+import { fetchSessionMessages } from "../src/sdk-bridge.ts";
+import { analyzeComposition } from "../src/analyzer/composition.ts";
+import { weightedDistribution } from "../src/analyzer/distribution.ts";
+import type { TurnDistributionInput } from "../src/analyzer/distribution.ts";
 
 const dbPath = getDbPath();
 if (!fs.existsSync(dbPath)) {
@@ -27,7 +31,17 @@ function fmtNum(v: number | null): string {
   return v.toLocaleString();
 }
 
-const WINDOW = "'-7 days'";
+let days = 7;
+const daysArgIdx = process.argv.indexOf("--days");
+if (daysArgIdx !== -1 && process.argv[daysArgIdx + 1]) {
+  const n = parseInt(process.argv[daysArgIdx + 1], 10);
+  if (!isNaN(n) && n > 0) days = n;
+} else if (process.env.OCTM_DAYS) {
+  const n = parseInt(process.env.OCTM_DAYS, 10);
+  if (!isNaN(n) && n > 0) days = n;
+}
+const WINDOW = `'-${days} days'`;
+const dayLabel = days === 1 ? "Last 1 Day" : `Last ${days} Days`;
 
 // ── Headline ──────────────────────────────────────────────────────────────────────────────
 
@@ -41,7 +55,7 @@ const headline = q(`
   WHERE s.started_at >= datetime('now', ${WINDOW})
 `)[0] as Record<string, number | null>;
 
-console.log(`# Telemetry Report — Last 7 Days\n`);
+console.log(`# Telemetry Report — ${dayLabel}\n`);
 console.log(`| Metric | Value |`);
 console.log(`|--------|-------|`);
 console.log(`| Sessions | ${fmtNum(headline?.sessions as number)} |`);
@@ -49,6 +63,50 @@ console.log(`| Turns | ${fmtNum(headline?.turns as number)} |`);
 console.log(`| Total Tokens | ${fmtNum(headline?.total_tokens as number)} |`);
 console.log(`| Est. Cost | ${fmtCost(headline?.total_cost as number)} |`);
 console.log();
+
+// ── Token Distribution ────────────────────────────────────────────────────────────────────
+console.log(`## Token Distribution\n`);
+
+// Resolve server URL from environment (fallback: sdk-bridge default)
+const serverUrl = process.env.OPENCODE_SERVER_URL ?? null;
+
+const sessionTokenRows = q(`
+  SELECT session_id,
+    COALESCE(total_input_tokens, 0) + COALESCE(total_cached_read, 0) AS context_tokens
+  FROM sessions
+  WHERE started_at >= datetime('now', ${WINDOW})
+  ORDER BY context_tokens DESC
+`) as { session_id: string; context_tokens: number }[];
+
+const distInputs: TurnDistributionInput[] = [];
+for (const row of sessionTokenRows) {
+  try {
+    const messages = await fetchSessionMessages(row.session_id, serverUrl);
+    if (messages.length > 0) {
+      const comp = analyzeComposition(messages, row.context_tokens);
+      distInputs.push({ composition: comp, total_input_tokens: row.context_tokens });
+    } else {
+      distInputs.push({ composition: null, total_input_tokens: row.context_tokens });
+    }
+  } catch {
+    distInputs.push({ composition: null, total_input_tokens: row.context_tokens });
+  }
+}
+
+const dist = weightedDistribution(distInputs);
+
+if (dist.covered_turns === 0) {
+  console.log(`_No content data available. Run \`octm inspect <session_id> --content\` to populate the content cache._\n`);
+} else {
+  console.log(`_Coverage: ${dist.covered_turns}/${dist.total_turns} sessions (${dist.coverage_pct}% of token weight). Distribution estimated from full session context._\n`);
+  console.log(`| Component | Share |`);
+  console.log(`|-----------|-------|`);
+  console.log(`| System / Tool Defs | ${dist.system_prompt}% |`);
+  console.log(`| Conversation History | ${dist.conversation_history}% |`);
+  console.log(`| Tool Results | ${dist.tool_outputs}% |`);
+  console.log(`| Current Turn Input | ${dist.user_message}% |`);
+  console.log();
+}
 
 // ── Top 10 sessions by cost ───────────────────────────────────────────────────────────────────────────
 
@@ -162,46 +220,47 @@ if (perModel.length === 0) {
 
 console.log(`## Tool Result Size Stats (p50 / p95)\n`);
 const toolStats = q(`
-  SELECT
-    tool_name,
-    COUNT(*) AS calls,
-    CAST(AVG(result_size_bytes) AS INTEGER) AS avg_bytes,
-    MAX(result_size_bytes) AS max_bytes,
-    CAST(result_size_bytes AS INTEGER) AS p50_bytes
-  FROM (
-    SELECT tool_name, result_size_bytes,
-      ROW_NUMBER() OVER (PARTITION BY tool_name ORDER BY result_size_bytes) AS rn,
-      COUNT(*) OVER (PARTITION BY tool_name) AS cnt
+  WITH base AS (
+    SELECT tool_name, result_size_bytes
     FROM tool_calls
     WHERE result_size_bytes IS NOT NULL
       AND created_at >= datetime('now', ${WINDOW})
+  ),
+  agg AS (
+    SELECT tool_name,
+      COUNT(*) AS calls,
+      CAST(AVG(result_size_bytes) AS INTEGER) AS avg_bytes,
+      MAX(result_size_bytes) AS max_bytes
+    FROM base GROUP BY tool_name
+  ),
+  p50 AS (
+    SELECT tool_name, CAST(result_size_bytes AS INTEGER) AS p50_bytes
+    FROM (
+      SELECT tool_name, result_size_bytes,
+        ROW_NUMBER() OVER (PARTITION BY tool_name ORDER BY result_size_bytes) AS rn,
+        COUNT(*) OVER (PARTITION BY tool_name) AS cnt
+      FROM base
+    ) WHERE rn = (cnt + 1) / 2
+  ),
+  p95 AS (
+    SELECT tool_name, CAST(result_size_bytes AS INTEGER) AS p95_bytes
+    FROM (
+      SELECT tool_name, result_size_bytes,
+        ROW_NUMBER() OVER (PARTITION BY tool_name ORDER BY result_size_bytes) AS rn,
+        COUNT(*) OVER (PARTITION BY tool_name) AS cnt
+      FROM base
+    ) WHERE rn = CASE WHEN CAST(cnt * 0.95 AS INTEGER) < 1 THEN 1
+                      ELSE CAST(cnt * 0.95 AS INTEGER) END
   )
-  WHERE rn = (cnt + 1) / 2
-  GROUP BY tool_name
-  ORDER BY avg_bytes DESC
+  SELECT a.tool_name, a.calls, a.avg_bytes, a.max_bytes,
+    COALESCE(p50.p50_bytes, a.avg_bytes) AS p50_bytes,
+    COALESCE(p95.p95_bytes, a.avg_bytes) AS p95_bytes
+  FROM agg a
+  LEFT JOIN p50 ON p50.tool_name = a.tool_name
+  LEFT JOIN p95 ON p95.tool_name = a.tool_name
+  ORDER BY a.avg_bytes DESC
   LIMIT 20
 `) as Record<string, unknown>[];
-
-// Compute p95 separately
-const toolP95 = q(`
-  SELECT
-    tool_name,
-    CAST(result_size_bytes AS INTEGER) AS p95_bytes
-  FROM (
-    SELECT tool_name, result_size_bytes,
-      ROW_NUMBER() OVER (PARTITION BY tool_name ORDER BY result_size_bytes) AS rn,
-      COUNT(*) OVER (PARTITION BY tool_name) AS cnt
-    FROM tool_calls
-    WHERE result_size_bytes IS NOT NULL
-      AND created_at >= datetime('now', ${WINDOW})
-  )
-  WHERE rn = CASE WHEN CAST(cnt * 0.95 AS INTEGER) < 1 THEN 1 ELSE CAST(cnt * 0.95 AS INTEGER) END
-`) as Record<string, unknown>[];
-
-const p95Map = new Map<string, number>();
-for (const r of toolP95) {
-  p95Map.set(r.tool_name as string, r.p95_bytes as number);
-}
 
 if (toolStats.length === 0) {
   console.log("_No tool call data._\n");
@@ -209,8 +268,7 @@ if (toolStats.length === 0) {
   console.log("| Tool | Calls | Avg (B) | p50 (B) | p95 (B) | Max (B) |");
   console.log("|------|-------|---------|---------|---------|---------|")
   for (const r of toolStats) {
-    const p95 = p95Map.get(r.tool_name as string);
-    console.log(`| ${r.tool_name} | ${r.calls} | ${fmtNum(r.avg_bytes as number)} | ${fmtNum(r.p50_bytes as number)} | ${fmtNum(p95 ?? null)} | ${fmtNum(r.max_bytes as number)} |`);
+    console.log(`| ${r.tool_name} | ${r.calls} | ${fmtNum(r.avg_bytes as number)} | ${fmtNum(r.p50_bytes as number)} | ${fmtNum(r.p95_bytes as number)} | ${fmtNum(r.max_bytes as number)} |`);
   }
   console.log();
 }
@@ -221,7 +279,7 @@ console.log(`## Skill Usage\n`);
 const skills = q(`
   SELECT
     skill_name,
-    COUNT(*) AS calls,
+    SUM(cnt) AS calls,
     COUNT(DISTINCT session_id) AS sessions,
     SUM(CASE WHEN cnt > 1 THEN 1 ELSE 0 END) AS sessions_with_dupes
   FROM (
