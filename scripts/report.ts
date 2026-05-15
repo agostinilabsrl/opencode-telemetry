@@ -67,31 +67,35 @@ console.log();
 // ── Token Distribution ────────────────────────────────────────────────────────────────────
 console.log(`## Token Distribution\n`);
 
-// Resolve server URL from environment (fallback: sdk-bridge default)
-const serverUrl = process.env.OPENCODE_SERVER_URL ?? null;
+// Prefer server URL recorded in DB (set at session creation), fall back to env
+const serverUrlRows = q(
+  "SELECT server_url FROM sessions WHERE server_url IS NOT NULL ORDER BY started_at DESC LIMIT 1"
+) as { server_url: string }[];
+const serverUrl = serverUrlRows[0]?.server_url ?? process.env.OPENCODE_SERVER_URL ?? null;
 
+// Top 50 sessions by context tokens — caps worst-case latency and covers the vast majority of token weight
 const sessionTokenRows = q(`
   SELECT session_id,
     COALESCE(total_input_tokens, 0) + COALESCE(total_cached_read, 0) AS context_tokens
   FROM sessions
   WHERE started_at >= datetime('now', ${WINDOW})
   ORDER BY context_tokens DESC
+  LIMIT 50
 `) as { session_id: string; context_tokens: number }[];
 
-const distInputs: TurnDistributionInput[] = [];
-for (const row of sessionTokenRows) {
-  try {
-    const messages = await fetchSessionMessages(row.session_id, serverUrl);
-    if (messages.length > 0) {
-      const comp = analyzeComposition(messages, row.context_tokens);
-      distInputs.push({ composition: comp, total_input_tokens: row.context_tokens });
-    } else {
-      distInputs.push({ composition: null, total_input_tokens: row.context_tokens });
-    }
-  } catch {
-    distInputs.push({ composition: null, total_input_tokens: row.context_tokens });
-  }
-}
+// Parallel fetch — cache hits are instant; timeouts all fire at once rather than serially
+const distInputs: TurnDistributionInput[] = await Promise.all(
+  sessionTokenRows.map(async (row) => {
+    try {
+      const messages = await fetchSessionMessages(row.session_id, serverUrl);
+      if (messages.length > 0) {
+        const comp = analyzeComposition(messages, row.context_tokens);
+        return { composition: comp, total_input_tokens: row.context_tokens };
+      }
+    } catch { /* non-fatal */ }
+    return { composition: null, total_input_tokens: row.context_tokens };
+  })
+);
 
 const dist = weightedDistribution(distInputs);
 

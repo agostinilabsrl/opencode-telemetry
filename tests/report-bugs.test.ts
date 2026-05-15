@@ -183,7 +183,8 @@ describe("#41 buildToolStatsCTE", () => {
     expect(rows.length).toBe(1);
     const row = rows[0];
     expect(row.calls).toBe(1);
-    // With a single row p50/p95 fall back to avg via COALESCE
+    // With a single row: rn=1, cnt=1 → (cnt+1)/2=1 → p50 row matches; same for p95.
+    // COALESCE never fires here — the percentile formulae always select a valid row for n≥1.
     expect(row.p50_bytes).toBe(row.avg_bytes);
     expect(row.p95_bytes).toBe(row.avg_bytes);
     // And p95 must never exceed max

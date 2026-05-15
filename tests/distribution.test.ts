@@ -105,8 +105,10 @@ describe("weightedDistribution", () => {
     expect(result.system_prompt).toBeGreaterThan(50);
   });
 
-  it("assistant_so_far in breakdown_pct does NOT contribute to output", () => {
-    // Build a composition with assistant_so_far > 0
+  it("assistant_so_far is excluded from re-normalisation — percentages still sum to ~100%", () => {
+    // Large assistant reply → assistant_so_far gets a big share of raw breakdown_pct.
+    // After re-normalisation (excluding assistant_so_far from denominator) the 4 context
+    // buckets must still sum to ~100%, not be deflated by the assistant share.
     const messages: MessageContent[] = [
       msg("user", "system prompt"),
       msg("assistant", "long assistant reply " + "x".repeat(500)),
@@ -114,21 +116,13 @@ describe("weightedDistribution", () => {
       msg("assistant", "in-progress reply"),
     ];
     const comp = analyzeComposition(messages, 2000);
-    // Verify that assistant_so_far is > 0
     expect(comp.breakdown_pct.assistant_so_far).toBeGreaterThan(0);
 
     const inputs: TurnDistributionInput[] = [{ composition: comp, total_input_tokens: 2000 }];
     const result = weightedDistribution(inputs);
 
-    // weightedDistribution output fields: system_prompt, conversation_history, tool_outputs, user_message
-    // assistant_so_far should NOT appear in the output
-    expect("assistant_so_far" in result).toBe(false);
-
-    // The 4 output fields should each be valid numbers (not inflated by assistant_so_far)
     const total = result.system_prompt + result.conversation_history + result.tool_outputs + result.user_message;
-    // Since assistant_so_far is excluded from the denominator normalization in weightedDistribution,
-    // the total may not be 100%, but should be ≤ 100%
-    expect(total).toBeGreaterThanOrEqual(0);
-    expect(total).toBeLessThanOrEqual(105);
+    expect(total).toBeGreaterThan(98);
+    expect(total).toBeLessThanOrEqual(102);
   });
 });

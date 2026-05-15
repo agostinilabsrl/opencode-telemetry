@@ -216,5 +216,6 @@ function safeByteLen(value: unknown): number | null {
 function extractSkillName(args: unknown): string | null {
   if (!args || typeof args !== "object") return null;
   const a = args as Record<string, unknown>;
-  return (a.name ?? a.skillName ?? a.id ?? a.skill) as string | null ?? null;
+  const v = a.name ?? a.skillName ?? a.id ?? a.skill;
+  return typeof v === "string" ? v : null;
 }

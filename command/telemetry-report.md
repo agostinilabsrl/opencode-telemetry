@@ -1,10 +1,11 @@
 ---
-description: Generate and save a 7-day telemetry report. Returns the saved file path.
+description: Generate and save a telemetry report (default last 7 days; pass --days N for a custom window). Returns the saved file path.
 ---
 
 You are running the telemetry-report command.
 
-Find the `octm` CLI and run it with `--save`, which writes the report to disk and returns the path:
+Find the `octm` CLI and run it with `--save`, which writes the report to disk and returns the path.
+Pass `--days N` to change the time window (e.g. `--days 1` for today, `--days 30` for a month):
 
 ```bash
 octm report --save 2>&1 \

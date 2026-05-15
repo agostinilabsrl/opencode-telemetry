@@ -111,10 +111,12 @@ if ((costRollup?.children_count as number) > 0) {
 }
 console.log();
 
-// Fetch once, reuse for both aggregate distribution and per-turn breakdown
+// Without --content: cache-only (no network calls, instant).
+// With --content: try live server then cache.
+const withContent = process.argv.includes("--content");
 let sessionMessages: MessageContent[] = [];
 try {
-  sessionMessages = await fetchSessionMessages(resolvedId, serverUrl);
+  sessionMessages = await fetchSessionMessages(resolvedId, serverUrl, /* cacheOnly */ !withContent);
 } catch { /* non-fatal */ }
 
 // ── Sub-sessions (agent hops) ─────────────────────────────────────────────────────────────────────────
@@ -175,7 +177,7 @@ if (agentChain.length === 0) {
 console.log(`## Token Distribution\n`);
 
 if (sessionMessages.length === 0) {
-  console.log(`_No content data. Run \`octm inspect ${resolvedId} --content\` to populate the cache._\n`);
+  console.log(`_No content cached. Run \`octm inspect ${resolvedId} --content\` to fetch from the live opencode server._\n`);
 } else {
   // Aggregate distribution for the whole session
   const sessionContextTokens = ((s.total_input_tokens as number) ?? 0) + ((s.total_cached_read as number) ?? 0);
@@ -243,7 +245,11 @@ if (turns.length > 1) {
 
 // ── Per-turn metrics ──────────────────────────────────────────────────────────────────────────────────
 
-// Pre-compute per-turn compositions if messages available
+// Pre-compute per-turn compositions if messages available.
+// Assumes strict user/assistant alternation (user[0], asst[0], user[1], asst[1], …).
+// Sessions with tool-use loops or multi-part exchanges may have more messages per turn,
+// causing later turns to all map to the full message list — percentages will be identical
+// rather than wrong, which is the graceful degradation.
 const userAssistantMsgs = sessionMessages.filter(m => m.role === "user" || m.role === "assistant");
 const turnCompositions: Map<number, { sys: number; hist: number; tools: number; inp: number }> = new Map();
 

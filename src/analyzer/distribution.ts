@@ -28,7 +28,7 @@ export function weightedDistribution(turns: TurnDistributionInput[]): ContextDis
     const tok = total_input_tokens ?? 0;
     totalWeight += tok;
 
-    if (!composition) continue;
+    if (!composition || tok === 0) continue;
 
     const bp = composition.breakdown_pct;
     // Re-normalise excluding assistant_so_far (output, not context)
