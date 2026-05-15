@@ -145,10 +145,8 @@ export function createHandlers(db: DbHandle, ctx: PluginInput) {
   ): Promise<void> {
     try {
       // NOTE: skill arg key is "name" based on @opencode-ai/plugin types (see NOTES.md)
-      const skillName =
-        input.tool === "skill"
-          ? ((output.args as Record<string, unknown>)?.name as string | null) ?? null
-          : null;
+      // Defensive: try multiple known key names in case the API changes (see NOTES.md §42)
+      const skillName = input.tool === "skill" ? extractSkillName(output.args) : null;
 
       pendingToolCalls.set(input.callID, {
         session_id: input.sessionID,
@@ -185,9 +183,7 @@ export function createHandlers(db: DbHandle, ctx: PluginInput) {
         tool_name: input.tool,
         skill_name:
           pending?.skill_name ??
-          (input.tool === "skill"
-            ? ((input.args as Record<string, unknown>)?.name as string | null) ?? null
-            : null),
+          (input.tool === "skill" ? extractSkillName(input.args) : null),
         tool_call_id: input.callID ?? null,
         spawned_session_id: null, // populated if opencode surfaces child session ID in result metadata
         args_size_bytes: pending?.args_size_bytes ?? safeByteLen(input.args),
@@ -215,4 +211,11 @@ function safeByteLen(value: unknown): number | null {
   } catch {
     return null;
   }
+}
+
+// Try multiple known key names for skill identification — defensive against API changes.
+function extractSkillName(args: unknown): string | null {
+  if (!args || typeof args !== "object") return null;
+  const a = args as Record<string, unknown>;
+  return (a.name ?? a.skillName ?? a.id ?? a.skill) as string | null ?? null;
 }

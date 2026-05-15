@@ -3,6 +3,11 @@
 // Usage: bun run scripts/inspect.ts <session_id>
 import { openDatabase } from "./db-compat.ts";
 import { getDbPath } from "../src/paths.ts";
+import { fetchSessionMessages } from "../src/sdk-bridge.ts";
+import { analyzeComposition } from "../src/analyzer/composition.ts";
+import { weightedDistribution } from "../src/analyzer/distribution.ts";
+import type { TurnDistributionInput } from "../src/analyzer/distribution.ts";
+import type { MessageContent } from "../src/sdk-bridge.ts";
 import fs from "fs";
 
 const sessionId = process.argv[2];
@@ -18,6 +23,13 @@ if (!fs.existsSync(dbPath)) {
 }
 
 const db = openDatabase(dbPath);
+
+// Read server URL from the most recent session that has one recorded
+const serverUrlRows = db.query(
+  "SELECT server_url FROM sessions WHERE server_url IS NOT NULL ORDER BY started_at DESC LIMIT 1"
+).all() as { server_url: string }[];
+const serverUrlRow = serverUrlRows[0] ?? null;
+const serverUrl = serverUrlRow?.server_url ?? process.env.OPENCODE_SERVER_URL ?? null;
 
 type Bindings = Record<string, string | number | boolean | null | bigint | Uint8Array>;
 function q(sql: string, params: Bindings = {}): unknown[] {
@@ -101,6 +113,13 @@ if ((costRollup?.children_count as number) > 0) {
 }
 console.log();
 
+// Fetch session messages once — reused for Token Distribution and per-turn composition columns.
+// Non-fatal: if the opencode server is not running, we degrade gracefully.
+let sessionMessages: MessageContent[] = [];
+try {
+  sessionMessages = await fetchSessionMessages(resolvedId, serverUrl);
+} catch { /* non-fatal */ }
+
 // ── Sub-sessions (agent hops) ─────────────────────────────────────────────────────────────────────────
 
 const subSessions = q(`
@@ -151,6 +170,27 @@ if (agentChain.length === 0) {
     const cachePct = r.cache_hit_pct != null ? `${r.cache_hit_pct}%` : "—";
     console.log(`| ${r.agent} | ${r.turns} | ${fmtNum(r.total_in as number)} | ${fmtNum(r.total_out as number)} | ${fmtNum(r.cache_read as number)} | ${cachePct} | ${String(r.first_turn).slice(11, 19)} | ${String(r.last_turn).slice(11, 19)} |`);
   }
+  console.log();
+}
+
+// ── Token Distribution ───────────────────────────────────────────────────────────────────────────────
+
+console.log(`## Token Distribution\n`);
+
+if (sessionMessages.length === 0) {
+  console.log(`_No content data. Run \`octm inspect ${resolvedId} --content\` to populate the cache._\n`);
+} else {
+  // Aggregate distribution for the whole session
+  const sessionContextTokens = ((s.total_input_tokens as number) ?? 0) + ((s.total_cached_read as number) ?? 0);
+  const comp = analyzeComposition(sessionMessages, sessionContextTokens);
+  const dist = weightedDistribution([{ composition: comp, total_input_tokens: sessionContextTokens }]);
+
+  console.log(`| Component | Share |`);
+  console.log(`|-----------|-------|`);
+  console.log(`| System / Tool Defs | ${dist.system_prompt}% |`);
+  console.log(`| Conversation History | ${dist.conversation_history}% |`);
+  console.log(`| Tool Results | ${dist.tool_outputs}% |`);
+  console.log(`| Current Turn Input | ${dist.user_message}% |`);
   console.log();
 }
 
@@ -206,21 +246,67 @@ if (turns.length > 1) {
 
 // ── Per-turn metrics ──────────────────────────────────────────────────────────────────────────────────
 
+// Pre-compute per-turn compositions if session messages are available
+const userAssistantMsgs = sessionMessages.filter(m => m.role === "user" || m.role === "assistant");
+const turnCompositions: Map<number, { sys: number; hist: number; tools: number; inp: number }> = new Map();
+
+if (userAssistantMsgs.length > 0) {
+  for (let i = 0; i < turns.length; i++) {
+    const turnIdx = turns[i].turn_idx as number;
+    // Context for turn i = messages[0..2i] (2i+1 messages: i user+assistant pairs + current user)
+    const sliceEnd = Math.min(2 * i + 1, userAssistantMsgs.length);
+    const slice = userAssistantMsgs.slice(0, sliceEnd);
+    if (slice.length === 0) continue;
+
+    const contextTokens = ((turns[i].input_tokens as number) ?? 0) + ((turns[i].cached_read_tokens as number) ?? 0);
+    const comp = analyzeComposition(slice, contextTokens);
+    const bp = comp.breakdown_pct;
+    const ctxSum = bp.system_prompt + bp.conversation_history + bp.tool_outputs + bp.user_message;
+    if (ctxSum === 0) continue;
+
+    turnCompositions.set(turnIdx, {
+      sys:   Math.round(bp.system_prompt        / ctxSum * 1000) / 10,
+      hist:  Math.round(bp.conversation_history  / ctxSum * 1000) / 10,
+      tools: Math.round(bp.tool_outputs          / ctxSum * 1000) / 10,
+      inp:   Math.round(bp.user_message          / ctxSum * 1000) / 10,
+    });
+  }
+}
+
+const hasComposition = turnCompositions.size > 0;
+
 console.log(`## Turns\n`);
 if (turns.length === 0) {
   console.log("_No turns recorded._\n");
 } else {
-  console.log("| # | Agent | Model | In | Out | Cached | Δ% | Reasoning | Latency | Finish |");
-  console.log("|---|-------|-------|-----|-----|--------|----|-----------|---------|--------|");
+  if (hasComposition) {
+    console.log("| # | Agent | Model | In | Out | Cached | Δ% | Reasoning | Latency | Finish | Sys% | Hist% | Tools% | In% |");
+    console.log("|---|-------|-------|-----|-----|--------|----|-----------|---------|--------|------|-------|--------|-----|");
+  } else {
+    console.log("| # | Agent | Model | In | Out | Cached | Δ% | Reasoning | Latency | Finish |");
+    console.log("|---|-------|-------|-----|-----|--------|----|-----------|---------|--------|");
+  }
   const contextValues2 = turns.map(t => ((t.input_tokens as number) ?? 0) + ((t.cached_read_tokens as number) ?? 0));
   for (let i = 0; i < turns.length; i++) {
     const t = turns[i];
     const prev = i > 0 ? contextValues2[i - 1] : null;
     const curr = contextValues2[i];
     const deltaPct = prev != null && prev > 0 ? `${((curr - prev) / prev * 100).toFixed(1)}%` : "—";
-    console.log(
-      `| ${t.turn_idx} | ${t.agent ?? "—"} | ${t.model ?? "—"} | ${fmtNum(t.input_tokens as number)} | ${fmtNum(t.output_tokens as number)} | ${fmtNum(t.cached_read_tokens as number)} | ${deltaPct} | ${fmtNum(t.reasoning_tokens as number)} | ${fmtMs(t.latency_ms as number)} | ${t.finish_reason ?? "—"} |`
-    );
+
+    if (hasComposition) {
+      const cp = turnCompositions.get(t.turn_idx as number);
+      const sys   = cp ? `${cp.sys}%`   : "—";
+      const hist  = cp ? `${cp.hist}%`  : "—";
+      const tools = cp ? `${cp.tools}%` : "—";
+      const inp   = cp ? `${cp.inp}%`   : "—";
+      console.log(
+        `| ${t.turn_idx} | ${t.agent ?? "—"} | ${t.model ?? "—"} | ${fmtNum(t.input_tokens as number)} | ${fmtNum(t.output_tokens as number)} | ${fmtNum(t.cached_read_tokens as number)} | ${deltaPct} | ${fmtNum(t.reasoning_tokens as number)} | ${fmtMs(t.latency_ms as number)} | ${t.finish_reason ?? "—"} | ${sys} | ${hist} | ${tools} | ${inp} |`
+      );
+    } else {
+      console.log(
+        `| ${t.turn_idx} | ${t.agent ?? "—"} | ${t.model ?? "—"} | ${fmtNum(t.input_tokens as number)} | ${fmtNum(t.output_tokens as number)} | ${fmtNum(t.cached_read_tokens as number)} | ${deltaPct} | ${fmtNum(t.reasoning_tokens as number)} | ${fmtMs(t.latency_ms as number)} | ${t.finish_reason ?? "—"} |`
+      );
+    }
   }
   console.log();
 }
