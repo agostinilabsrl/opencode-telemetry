@@ -5,12 +5,13 @@ description: Generate and save a telemetry report (default last 7 days; pass --d
 You are running the telemetry-report command.
 
 Find the `octm` CLI and run it with `--save`, which writes the report to disk and returns the path.
-Pass `--days N` to change the time window (e.g. `--days 1` for today, `--days 30` for a month):
+Pass `--days N` to change the time window (e.g. `--days 1` for today, `--days 30` for a month).
+Pass `--content` to include Token Distribution (requires cached content from `octm inspect --content`):
 
 ```bash
-octm report --save 2>&1 \
-  || bun run "$(bun pm ls -g 2>/dev/null | grep opencode-telemetry | awk '{print $1}')/bin/cli.ts" report --save 2>&1 \
-  || bun run ~/.config/opencode/plugin/opencode-telemetry/bin/cli.ts report --save 2>&1 \
+octm report --save --days 7 2>&1 \
+  || bun run "$(bun pm ls -g 2>/dev/null | grep opencode-telemetry | awk '{print $1}')/bin/cli.ts" report --save --days 7 2>&1 \
+  || bun run ~/.config/opencode/plugin/opencode-telemetry/bin/cli.ts report --save --days 7 2>&1 \
   || echo "ERROR: could not locate octm. Make sure bun is in PATH and opencode-telemetry is installed."
 ```
 

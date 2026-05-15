@@ -7,7 +7,6 @@ import fs from "fs";
 import { fetchSessionMessages } from "../src/sdk-bridge.ts";
 import { analyzeComposition } from "../src/analyzer/composition.ts";
 import { weightedDistribution } from "../src/analyzer/distribution.ts";
-import type { TurnDistributionInput } from "../src/analyzer/distribution.ts";
 import type { MessageContent } from "../src/sdk-bridge.ts";
 
 const sessionId = process.argv[2];
@@ -23,11 +22,6 @@ if (!fs.existsSync(dbPath)) {
 }
 
 const db = openDatabase(dbPath);
-
-const serverUrlRows = db.query(
-  "SELECT server_url FROM sessions WHERE server_url IS NOT NULL ORDER BY started_at DESC LIMIT 1"
-).all() as { server_url: string }[];
-const serverUrl = (serverUrlRows[0]?.server_url) ?? process.env.OPENCODE_SERVER_URL ?? null;
 
 type Bindings = Record<string, string | number | boolean | null | bigint | Uint8Array>;
 function q(sql: string, params: Bindings = {}): unknown[] {
@@ -66,6 +60,13 @@ if (sessions.length === 0) {
 }
 const s = sessions[0] as Record<string, unknown>;
 const resolvedId = s.session_id as string;
+
+// Look up the server URL recorded for this specific session (may differ from latest)
+const serverUrlRows = q(
+  "SELECT server_url FROM sessions WHERE session_id = $id AND server_url IS NOT NULL LIMIT 1",
+  { $id: resolvedId }
+) as { server_url: string }[];
+const serverUrl = serverUrlRows[0]?.server_url ?? process.env.OPENCODE_SERVER_URL ?? null;
 
 const slashCmd = (s.slash_command as string | null) ??
   (s.primary_agent ? `/${s.primary_agent}` : null);
@@ -181,16 +182,20 @@ if (sessionMessages.length === 0) {
 } else {
   // Aggregate distribution for the whole session
   const sessionContextTokens = ((s.total_input_tokens as number) ?? 0) + ((s.total_cached_read as number) ?? 0);
-  const comp = analyzeComposition(sessionMessages, sessionContextTokens);
-  const dist = weightedDistribution([{ composition: comp, total_input_tokens: sessionContextTokens }]);
+  if (sessionContextTokens === 0) {
+    console.log(`_No token data for this session._\n`);
+  } else {
+    const comp = analyzeComposition(sessionMessages, sessionContextTokens);
+    const dist = weightedDistribution([{ composition: comp, total_input_tokens: sessionContextTokens }]);
 
-  console.log(`| Component | Share |`);
-  console.log(`|-----------|-------|`);
-  console.log(`| System / Tool Defs | ${dist.system_prompt}% |`);
-  console.log(`| Conversation History | ${dist.conversation_history}% |`);
-  console.log(`| Tool Results | ${dist.tool_outputs}% |`);
-  console.log(`| Current Turn Input | ${dist.user_message}% |`);
-  console.log();
+    console.log(`| Component | Share |`);
+    console.log(`|-----------|-------|`);
+    console.log(`| System / Tool Defs | ${dist.system_prompt}% |`);
+    console.log(`| Conversation History | ${dist.conversation_history}% |`);
+    console.log(`| Tool Results | ${dist.tool_outputs}% |`);
+    console.log(`| Current Turn Input | ${dist.user_message}% |`);
+    console.log();
+  }
 }
 
 // ── Token trajectory ──────────────────────────────────────────────────────────────────────────────────

@@ -54,8 +54,8 @@ describe("weightedDistribution", () => {
 
     // percentages sum to ~100 (allow ±2 for rounding)
     const total = result.system_prompt + result.conversation_history + result.tool_outputs + result.user_message;
-    expect(total).toBeGreaterThan(98);
-    expect(total).toBeLessThanOrEqual(102);
+    expect(total).toBeGreaterThan(99);
+    expect(total).toBeLessThanOrEqual(101);
   });
 
   it("entry with null composition → does not contribute to pct but lowers coverage_pct", () => {
@@ -78,8 +78,8 @@ describe("weightedDistribution", () => {
 
     // pct should still come from the covered turn
     const total = result.system_prompt + result.conversation_history + result.tool_outputs + result.user_message;
-    expect(total).toBeGreaterThan(98);
-    expect(total).toBeLessThanOrEqual(102);
+    expect(total).toBeGreaterThan(99);
+    expect(total).toBeLessThanOrEqual(101);
   });
 
   it("weighting: large turn dominates over small turn", () => {
@@ -122,7 +122,7 @@ describe("weightedDistribution", () => {
     const result = weightedDistribution(inputs);
 
     const total = result.system_prompt + result.conversation_history + result.tool_outputs + result.user_message;
-    expect(total).toBeGreaterThan(98);
-    expect(total).toBeLessThanOrEqual(102);
+    expect(total).toBeGreaterThan(99);
+    expect(total).toBeLessThanOrEqual(101);
   });
 });

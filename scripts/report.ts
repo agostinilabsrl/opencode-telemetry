@@ -67,6 +67,9 @@ console.log();
 // ── Token Distribution ────────────────────────────────────────────────────────────────────
 console.log(`## Token Distribution\n`);
 
+// --content: attempt live fetch; default is cache-only (no network, instant)
+const withContent = process.argv.includes("--content");
+
 // Prefer server URL recorded in DB (set at session creation), fall back to env
 const serverUrlRows = q(
   "SELECT server_url FROM sessions WHERE server_url IS NOT NULL ORDER BY started_at DESC LIMIT 1"
@@ -87,7 +90,7 @@ const sessionTokenRows = q(`
 const distInputs: TurnDistributionInput[] = await Promise.all(
   sessionTokenRows.map(async (row) => {
     try {
-      const messages = await fetchSessionMessages(row.session_id, serverUrl);
+      const messages = await fetchSessionMessages(row.session_id, serverUrl, /* cacheOnly */ !withContent);
       if (messages.length > 0) {
         const comp = analyzeComposition(messages, row.context_tokens);
         return { composition: comp, total_input_tokens: row.context_tokens };
@@ -100,7 +103,7 @@ const distInputs: TurnDistributionInput[] = await Promise.all(
 const dist = weightedDistribution(distInputs);
 
 if (dist.covered_turns === 0) {
-  console.log(`_No content data available. Run \`octm inspect <session_id> --content\` to populate the content cache._\n`);
+  console.log(`_No content cached. Run \`octm inspect <session_id> --content\` to populate the cache, then \`octm report --content\` to include distribution._\n`);
 } else {
   console.log(`_Coverage: ${dist.covered_turns}/${dist.total_turns} sessions (${dist.coverage_pct}% of token weight). Distribution estimated from full session context._\n`);
   console.log(`| Component | Share |`);
@@ -238,6 +241,7 @@ const toolStats = q(`
     FROM base GROUP BY tool_name
   ),
   p50 AS (
+    -- lower-median: rn = floor((cnt+1)/2), biased low for even-length sets
     SELECT tool_name, CAST(result_size_bytes AS INTEGER) AS p50_bytes
     FROM (
       SELECT tool_name, result_size_bytes,
@@ -257,8 +261,8 @@ const toolStats = q(`
                       ELSE CAST(cnt * 0.95 AS INTEGER) END
   )
   SELECT a.tool_name, a.calls, a.avg_bytes, a.max_bytes,
-    COALESCE(p50.p50_bytes, a.avg_bytes) AS p50_bytes,
-    COALESCE(p95.p95_bytes, a.avg_bytes) AS p95_bytes
+    p50.p50_bytes,
+    p95.p95_bytes
   FROM agg a
   LEFT JOIN p50 ON p50.tool_name = a.tool_name
   LEFT JOIN p95 ON p95.tool_name = a.tool_name
