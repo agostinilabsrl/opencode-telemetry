@@ -27,7 +27,12 @@ All new columns are NULL by default; existing data is unaffected.
 
 ### Migration path for existing users
 
-New columns are added automatically via inline `ALTER TABLE` on plugin startup (errors swallowed if already present). No manual action required.
+New columns are added automatically via `ALTER TABLE` migrations on plugin startup. No manual action required.
+
+> **Retroactive correction**: the original v0.2 migration used bare `try/catch` around each
+> `ALTER TABLE` which could silently swallow errors, leaving columns missing while
+> `schema_version` was still bumped — an unrecoverable state. This was fixed in subsequent
+> migrations (v4 and v5) which use `PRAGMA table_info` guards. See NOTES.md §17.
 
 ### Bug fixes / improvements
 
