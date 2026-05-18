@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   slash_command       TEXT,
   project_path        TEXT,
   worktree_path       TEXT,
+  server_url          TEXT,
   total_input_tokens  INTEGER DEFAULT 0,
   total_output_tokens INTEGER DEFAULT 0,
   total_cached_read   INTEGER DEFAULT 0,
@@ -79,7 +80,7 @@ CREATE TABLE IF NOT EXISTS _meta (
   value TEXT NOT NULL
 );
 
-INSERT OR IGNORE INTO _meta (key, value) VALUES ('schema_version', '3');
+INSERT OR IGNORE INTO _meta (key, value) VALUES ('schema_version', '4');
 INSERT OR IGNORE INTO _meta (key, value) VALUES ('created_at', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
 `;
 
@@ -134,6 +135,19 @@ const MIGRATIONS: Migration[] = [
         SET slash_command = '/' || primary_agent
         WHERE primary_agent IS NOT NULL AND (slash_command IS NULL OR slash_command = '')
       `);
+    },
+  },
+  {
+    version: 4,
+    up(db) {
+      // v2 used bare try/catch around ALTER TABLE which could silently swallow errors,
+      // leaving server_url missing even though schema_version was bumped to 2.
+      // Use PRAGMA table_info to safely recover any DB in that state.
+      const sessionCols = db.query("PRAGMA table_info(sessions)").all() as { name: string }[];
+      const colNames = new Set(sessionCols.map(c => c.name));
+      if (!colNames.has("server_url")) {
+        db.exec("ALTER TABLE sessions ADD COLUMN server_url TEXT");
+      }
     },
   },
 ];

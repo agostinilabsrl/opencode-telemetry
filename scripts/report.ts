@@ -70,11 +70,16 @@ console.log(`## Token Distribution\n`);
 // --content: attempt live fetch; default is cache-only (no network, instant)
 const withContent = process.argv.includes("--content");
 
-// Prefer server URL recorded in DB (set at session creation), fall back to env
-const serverUrlRows = q(
-  "SELECT server_url FROM sessions WHERE server_url IS NOT NULL ORDER BY started_at DESC LIMIT 1"
-) as { server_url: string }[];
-const serverUrl = serverUrlRows[0]?.server_url ?? process.env.OPENCODE_SERVER_URL ?? null;
+// Prefer server URL recorded in DB (set at session creation), fall back to env.
+// Guard against older DBs where the server_url column may not exist yet (migration
+// v2 used bare try/catch and could have silently skipped the ALTER TABLE).
+let serverUrl: string | null = process.env.OPENCODE_SERVER_URL ?? null;
+try {
+  const serverUrlRows = q(
+    "SELECT server_url FROM sessions WHERE server_url IS NOT NULL ORDER BY started_at DESC LIMIT 1"
+  ) as { server_url: string }[];
+  serverUrl = serverUrlRows[0]?.server_url ?? serverUrl;
+} catch { /* column missing — DB not yet migrated; fall back to env */ }
 
 // Top 50 sessions by context tokens — caps worst-case latency and covers the vast majority of token weight
 const sessionTokenRows = q(`
