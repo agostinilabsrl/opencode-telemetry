@@ -210,6 +210,40 @@ Per spec §5.2 preference: `bun:sqlite` (built-in, zero external dependency) was
 
 ---
 
+## 17. Migration v2 bare-try/catch — bug class and fix (issue #44)
+
+**Bug**: Migration v2 (shipped in v0.2.0) used bare `try/catch` around each `ALTER TABLE`
+statement, assuming any exception meant "column already exists". If an ALTER failed for any
+other reason, the error was swallowed but the transaction still committed `schema_version=2`.
+Result: columns missing, DB in unrecoverable state, no subsequent migration to repair it.
+
+**Affected columns** (all added in migration v2 via bare try/catch):
+
+| Column | Table | Recovery |
+|--------|-------|----------|
+| `slash_command` | `sessions` | migration v3 (PRAGMA check) |
+| `server_url` | `sessions` | migration v4 (PRAGMA check) — manifested as crash in `report.ts` (issue #44) |
+| `parent_tool_call_id` | `turns` | migration v5 (PRAGMA check) |
+| `tool_call_id` | `tool_calls` | migration v5 (PRAGMA check) |
+| `spawned_session_id` | `tool_calls` | migration v5 (PRAGMA check) |
+
+**Root cause of the visible crash (issue #44)**: `report.ts` opens the DB readonly (no
+migrations run at report time), queries `server_url` directly →
+`SQLiteError: no such column: server_url`.
+
+**Fix (three layers)**:
+1. All v2 columns added to the base `CREATE TABLE` DDL in the SCHEMA constant — fresh installs
+   get the correct schema from the start without relying on migrations.
+2. Migrations v4 and v5 use `PRAGMA table_info` before each `ALTER TABLE` — any existing DB
+   missing these columns is silently repaired on next plugin startup.
+3. The `server_url` query in `report.ts` is wrapped in try/catch with env-var fallback —
+   the report degrades gracefully even on a DB that has not yet been migrated.
+
+**Rule**: see CLAUDE.md §Schema Migration Convention — always use `PRAGMA table_info` before
+`ALTER TABLE`. Migration v2 is kept as-is (historical record) with a WARNING comment.
+
+---
+
 ## 16. Subagent Attribution Verification Status (Phase 0 Investigation) [formerly §15]
 
 **Question**: Is `parent_session_id` correctly captured when a Conductor session dispatches ACT/REVIEW subagents? A $2.63 vs ~$10 billing discrepancy suggests child costs may be invisible.

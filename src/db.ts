@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   slash_command       TEXT,
   project_path        TEXT,
   worktree_path       TEXT,
+  server_url          TEXT,
   total_input_tokens  INTEGER DEFAULT 0,
   total_output_tokens INTEGER DEFAULT 0,
   total_cached_read   INTEGER DEFAULT 0,
@@ -36,6 +37,7 @@ CREATE TABLE IF NOT EXISTS turns (
   session_id          TEXT NOT NULL,
   turn_idx            INTEGER NOT NULL,
   message_id          TEXT,
+  parent_tool_call_id TEXT,
   agent               TEXT,
   model               TEXT,
   provider_id         TEXT,
@@ -54,6 +56,7 @@ CREATE TABLE IF NOT EXISTS turns (
 CREATE INDEX IF NOT EXISTS idx_turns_session ON turns(session_id);
 CREATE INDEX IF NOT EXISTS idx_turns_agent_model ON turns(agent, model);
 CREATE INDEX IF NOT EXISTS idx_turns_created_at ON turns(created_at);
+CREATE INDEX IF NOT EXISTS idx_turns_parent_tool ON turns(parent_tool_call_id) WHERE parent_tool_call_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS tool_calls (
   id                INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -61,6 +64,8 @@ CREATE TABLE IF NOT EXISTS tool_calls (
   turn_idx          INTEGER,
   tool_name         TEXT NOT NULL,
   skill_name        TEXT,
+  tool_call_id      TEXT,
+  spawned_session_id TEXT,
   args_size_bytes   INTEGER,
   result_size_bytes INTEGER,
   duration_ms       INTEGER,
@@ -73,13 +78,15 @@ CREATE INDEX IF NOT EXISTS idx_tool_calls_session ON tool_calls(session_id);
 CREATE INDEX IF NOT EXISTS idx_tool_calls_tool ON tool_calls(tool_name);
 CREATE INDEX IF NOT EXISTS idx_tool_calls_skill ON tool_calls(skill_name) WHERE skill_name IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_tool_calls_created_at ON tool_calls(created_at);
+CREATE INDEX IF NOT EXISTS idx_tool_calls_tool_id ON tool_calls(tool_call_id) WHERE tool_call_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_tool_calls_spawned ON tool_calls(spawned_session_id) WHERE spawned_session_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS _meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
 
-INSERT OR IGNORE INTO _meta (key, value) VALUES ('schema_version', '3');
+INSERT OR IGNORE INTO _meta (key, value) VALUES ('schema_version', '5');
 INSERT OR IGNORE INTO _meta (key, value) VALUES ('created_at', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
 `;
 
@@ -93,6 +100,10 @@ interface Migration {
 const MIGRATIONS: Migration[] = [
   {
     version: 2,
+    // WARNING: legacy bad pattern — do NOT use as a template.
+    // Bare try/catch around each ALTER TABLE can silently swallow real errors,
+    // leaving columns missing while schema_version is still bumped.
+    // Migrations v3–v5 use PRAGMA table_info to recover from this. See NOTES.md §17.
     up(db) {
       try { db.exec("ALTER TABLE sessions ADD COLUMN slash_command TEXT"); } catch { /* already exists */ }
       try { db.exec("ALTER TABLE turns ADD COLUMN parent_tool_call_id TEXT"); } catch { /* already exists */ }
@@ -134,6 +145,43 @@ const MIGRATIONS: Migration[] = [
         SET slash_command = '/' || primary_agent
         WHERE primary_agent IS NOT NULL AND (slash_command IS NULL OR slash_command = '')
       `);
+    },
+  },
+  {
+    version: 4,
+    up(db) {
+      // v2 used bare try/catch around ALTER TABLE which could silently swallow errors,
+      // leaving server_url missing even though schema_version was bumped to 2.
+      // Use PRAGMA table_info to safely recover any DB in that state.
+      const sessionCols = db.query("PRAGMA table_info(sessions)").all() as { name: string }[];
+      const colNames = new Set(sessionCols.map(c => c.name));
+      if (!colNames.has("server_url")) {
+        db.exec("ALTER TABLE sessions ADD COLUMN server_url TEXT");
+      }
+    },
+  },
+  {
+    version: 5,
+    up(db) {
+      // Same root cause as v4: v2 bare try/catch may have left these columns missing.
+      const turnCols = new Set(
+        (db.query("PRAGMA table_info(turns)").all() as { name: string }[]).map(c => c.name)
+      );
+      if (!turnCols.has("parent_tool_call_id")) {
+        db.exec("ALTER TABLE turns ADD COLUMN parent_tool_call_id TEXT");
+        db.exec("CREATE INDEX IF NOT EXISTS idx_turns_parent_tool ON turns(parent_tool_call_id) WHERE parent_tool_call_id IS NOT NULL");
+      }
+      const toolCols = new Set(
+        (db.query("PRAGMA table_info(tool_calls)").all() as { name: string }[]).map(c => c.name)
+      );
+      if (!toolCols.has("tool_call_id")) {
+        db.exec("ALTER TABLE tool_calls ADD COLUMN tool_call_id TEXT");
+        db.exec("CREATE INDEX IF NOT EXISTS idx_tool_calls_tool_id ON tool_calls(tool_call_id) WHERE tool_call_id IS NOT NULL");
+      }
+      if (!toolCols.has("spawned_session_id")) {
+        db.exec("ALTER TABLE tool_calls ADD COLUMN spawned_session_id TEXT");
+        db.exec("CREATE INDEX IF NOT EXISTS idx_tool_calls_spawned ON tool_calls(spawned_session_id) WHERE spawned_session_id IS NOT NULL");
+      }
     },
   },
 ];
