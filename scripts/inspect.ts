@@ -61,12 +61,17 @@ if (sessions.length === 0) {
 const s = sessions[0] as Record<string, unknown>;
 const resolvedId = s.session_id as string;
 
-// Look up the server URL recorded for this specific session (may differ from latest)
-const serverUrlRows = q(
-  "SELECT server_url FROM sessions WHERE session_id = $id AND server_url IS NOT NULL LIMIT 1",
-  { $id: resolvedId }
-) as { server_url: string }[];
-const serverUrl = serverUrlRows[0]?.server_url ?? process.env.OPENCODE_SERVER_URL ?? null;
+// Look up the server URL recorded for this specific session (may differ from latest).
+// Guard against older DBs where the server_url column may not exist yet (migration
+// v2 used bare try/catch and could have silently skipped the ALTER TABLE).
+let serverUrl: string | null = process.env.OPENCODE_SERVER_URL ?? null;
+try {
+  const serverUrlRows = q(
+    "SELECT server_url FROM sessions WHERE session_id = $id AND server_url IS NOT NULL LIMIT 1",
+    { $id: resolvedId }
+  ) as { server_url: string }[];
+  serverUrl = serverUrlRows[0]?.server_url ?? serverUrl;
+} catch { /* column missing — DB not yet migrated; fall back to env */ }
 
 const slashCmd = (s.slash_command as string | null) ??
   (s.primary_agent ? `/${s.primary_agent}` : null);
