@@ -123,7 +123,7 @@ if (dist.covered_turns === 0) {
 // ── Top 10 sessions by cost ───────────────────────────────────────────────────────────────────────────
 
 console.log(`## Top 10 Sessions by Cost\n`);
-const topSessions = q(`
+const TOP_SESSIONS_CTE = `
   WITH RECURSIVE tree(session_id, root, est_cost_usd) AS (
     SELECT session_id, session_id AS root, COALESCE(est_cost_usd, 0) FROM sessions
     UNION ALL
@@ -141,7 +141,7 @@ const topSessions = q(`
   )
   SELECT
     s.session_id AS id,
-    COALESCE(s.slash_command, CASE WHEN s.primary_agent IS NOT NULL THEN '/' || s.primary_agent ELSE '—' END) AS command,
+    %COMMAND% AS command,
     COALESCE(s.primary_agent, '—') AS agent,
     s.total_input_tokens + s.total_output_tokens AS tokens,
     r.self_cost AS cost,
@@ -157,7 +157,18 @@ const topSessions = q(`
     AND r.self_cost IS NOT NULL
   ORDER BY r.total_cost DESC
   LIMIT 10
-`) as Record<string, unknown>[];
+`;
+// Guard against older DBs where slash_command may not exist yet.
+let topSessions: Record<string, unknown>[] = [];
+try {
+  topSessions = q(TOP_SESSIONS_CTE.replace("%COMMAND%",
+    "COALESCE(s.slash_command, CASE WHEN s.primary_agent IS NOT NULL THEN '/' || s.primary_agent ELSE '—' END)"
+  )) as Record<string, unknown>[];
+} catch {
+  topSessions = q(TOP_SESSIONS_CTE.replace("%COMMAND%",
+    "COALESCE('/' || s.primary_agent, '—')"
+  )) as Record<string, unknown>[];
+}
 
 if (topSessions.length === 0) {
   console.log("_No sessions with cost data._\n");

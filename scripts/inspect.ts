@@ -127,13 +127,25 @@ try {
 
 // ── Sub-sessions (agent hops) ─────────────────────────────────────────────────────────────────────────
 
-const subSessions = q(`
-  SELECT session_id, primary_agent, slash_command, started_at, ended_at,
-    total_turns, total_input_tokens, total_output_tokens, total_cached_read, est_cost_usd
-  FROM sessions
-  WHERE parent_session_id = $id
-  ORDER BY started_at
-`, { $id: resolvedId }) as Record<string, unknown>[];
+// Guard against older DBs where slash_command may not exist yet.
+let subSessions: Record<string, unknown>[] = [];
+try {
+  subSessions = q(`
+    SELECT session_id, primary_agent, slash_command, started_at, ended_at,
+      total_turns, total_input_tokens, total_output_tokens, total_cached_read, est_cost_usd
+    FROM sessions
+    WHERE parent_session_id = $id
+    ORDER BY started_at
+  `, { $id: resolvedId }) as Record<string, unknown>[];
+} catch {
+  subSessions = q(`
+    SELECT session_id, primary_agent, NULL AS slash_command, started_at, ended_at,
+      total_turns, total_input_tokens, total_output_tokens, total_cached_read, est_cost_usd
+    FROM sessions
+    WHERE parent_session_id = $id
+    ORDER BY started_at
+  `, { $id: resolvedId }) as Record<string, unknown>[];
+}
 
 if (subSessions.length > 0) {
   console.log(`## Agent Hops (Sub-Sessions)\n`);

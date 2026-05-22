@@ -53,12 +53,15 @@ export async function runCache(parsed: ParsedArgs): Promise<void> {
     const dbPath = getDbPath();
     if (!fs.existsSync(dbPath)) { console.error("No telemetry database found."); process.exit(1); }
     const db = openDatabase(dbPath);
-    const rows = db.query(
-      "SELECT server_url FROM sessions WHERE server_url IS NOT NULL ORDER BY started_at DESC LIMIT 1"
-    ).all({}) as { server_url: string }[];
+    // Guard against older DBs where server_url may not exist yet (migration v2 bare try/catch).
+    let serverUrl: string | null = null;
+    try {
+      const rows = db.query(
+        "SELECT server_url FROM sessions WHERE server_url IS NOT NULL ORDER BY started_at DESC LIMIT 1"
+      ).all({}) as { server_url: string }[];
+      serverUrl = rows[0]?.server_url ?? null;
+    } catch { /* column missing — DB not yet migrated */ }
     db.close();
-
-    const serverUrl = rows[0]?.server_url ?? null;
 
     console.log(`Prefetching messages for session ${sessionId}...`);
     const msgs = await fetchSessionMessages(sessionId, serverUrl);
