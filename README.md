@@ -14,13 +14,16 @@ Local-first historical telemetry for opencode sessions. Track where your tokens 
 
 ## When to use this plugin
 
-The opencode ecosystem has three telemetry plugins with different scopes. Pick the one that matches your need:
+The opencode ecosystem has several telemetry plugins with different scopes. Pick the one that matches your need:
 
 | Need | Plugin |
 |------|--------|
 | Inspect a live session interactively to see how tokens are split right now | [Opencode-Context-Analysis-Plugin](https://github.com/IgorWarzocha/Opencode-Context-Analysis-Plugin) by Igor Warzocha |
+| Deep on-demand breakdown of a single session (context composition, tool-schema sizing, cache efficiency) via a slash command | [Tokenscope](https://github.com/ramtinJ95/opencode-tokenscope) by ramtinJ95 |
 | Stream telemetry to an existing observability backend (Datadog, Honeycomb, Grafana Cloud) | [opencode-plugin-otel](https://github.com/DEVtheOPS/opencode-plugin-otel) by DEVtheOPS |
-| Analyze sessions historically, forensically, locally, with no infrastructure | **opencode-telemetry** (this plugin) |
+| Analyze sessions historically, forensically, locally, across runs, with no infrastructure | **opencode-telemetry** (this plugin) |
+
+The distinction that matters: Tokenscope and Igor's plugin run on demand against the session you point them at — they answer "what does *this* session look like right now?". opencode-telemetry runs passively and persists every session to SQLite, so it answers "what happened across all my sessions last week, and which orchestration chains cost the most?". They are complementary: use Tokenscope for a deep one-shot autopsy, use this plugin for cross-session history and orchestration-chain rollups.
 
 These plugins are complementary, not competing. You can install more than one.
 
@@ -30,7 +33,7 @@ This plugin is built for users who:
 - Don't have or want an OpenTelemetry collector running
 - Need turn-by-turn forensics to understand "where did those tokens actually go?"
 
-We owe a debt of inspiration to both projects above — the live-decomposition approach (Igor) and the streaming-export model (DEVtheOPS). This plugin fills the third corner: persistent, local, forensic.
+We owe a debt of inspiration to the projects above — the live-decomposition approach (Igor), the deep per-session context breakdown (Tokenscope), and the streaming-export model (DEVtheOPS). This plugin fills the remaining corner: persistent, local, forensic, cross-session.
 
 ## Installation
 
