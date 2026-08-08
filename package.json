@@ -36,6 +36,7 @@
     "url": "git+https://github.com/agostinilabsrl/opencode-telemetry.git"
   },
   "scripts": {
+    "test": "bun test",
     "typecheck": "tsc --noEmit",
     "smoke": "bun run scripts/smoke.ts",
     "octm": "bun run bin/cli.ts",
